@@ -1,0 +1,16 @@
+[
+  {
+    "message_name": "Registration Request",
+    "family_name": "message-type substitution",
+    "operator": "replace 0x41 with another valid 5GMM type such as 0x5c, 0x56, 0x57, 0x5d",
+    "result_class": "early-semantic-reject",
+    "notes": "proxy campaign already covered common wrong first-message types"
+  },
+  {
+    "message_name": "Registration Request",
+    "family_name": "mobile-identity length corruption",
+    "operator": "set length 0x000d -> 0x0000",
+    "result_class": "deep-decoder-failure",
+    "notes": "proxy campaign reached deeper NAS decoder path"
+  }
+]

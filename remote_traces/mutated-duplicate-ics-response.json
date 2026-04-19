@@ -1,0 +1,234 @@
+{
+  "procedure": "Captured Initial Registration",
+  "description": "Extracted from tshark -V NGAP decode output.",
+  "messages": [
+    {
+      "id": 1,
+      "direction": "gNB->AMF",
+      "protocol": "NGAP",
+      "message_type": "NGSetupRequest",
+      "ngap_fields": {
+        "TAC": "1"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 2,
+      "direction": "AMF->gNB",
+      "protocol": "NGAP",
+      "message_type": "NGSetupResponse",
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 3,
+      "direction": "gNB->AMF",
+      "protocol": "NGAP",
+      "message_type": "InitialUEMessage",
+      "ngap_fields": {
+        "RAN_UE_NGAP_ID": "1",
+        "TAC": "1"
+      },
+      "nas": {
+        "fields": {},
+        "message_type": "Registration request",
+        "security_header_type": "Plain NAS message, not security protected (0)"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 4,
+      "direction": "AMF->gNB",
+      "protocol": "NGAP",
+      "message_type": "DownlinkNASTransport",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1"
+      },
+      "nas": {
+        "fields": {},
+        "message_type": "Authentication request",
+        "security_header_type": "Plain NAS message, not security protected (0)"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 5,
+      "direction": "gNB->AMF",
+      "protocol": "NGAP",
+      "message_type": "UplinkNASTransport",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1",
+        "TAC": "1"
+      },
+      "nas": {
+        "fields": {},
+        "message_type": "Authentication response",
+        "security_header_type": "Plain NAS message, not security protected (0)"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 6,
+      "direction": "AMF->gNB",
+      "protocol": "NGAP",
+      "message_type": "DownlinkNASTransport",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1"
+      },
+      "nas": {
+        "fields": {},
+        "message_type": "Security mode command",
+        "security_header_type": "Integrity protected with new 5GS security context (3)"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 7,
+      "direction": "gNB->AMF",
+      "protocol": "NGAP",
+      "message_type": "UplinkNASTransport",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1",
+        "TAC": "1"
+      },
+      "nas": {
+        "fields": {},
+        "security_header_type": "Integrity protected and ciphered with new 5GS security context (4)"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 8,
+      "direction": "AMF->gNB",
+      "protocol": "NGAP",
+      "message_type": "InitialContextSetupRequest",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1"
+      },
+      "nas": {
+        "fields": {},
+        "security_header_type": "Integrity protected and ciphered (2)"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 9,
+      "direction": "gNB->AMF",
+      "protocol": "NGAP",
+      "message_type": "InitialContextSetupResponse",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 10,
+      "direction": "gNB->AMF",
+      "protocol": "NGAP",
+      "message_type": "InitialContextSetupResponse",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1"
+      },
+      "metadata": {
+        "source": "tshark-text",
+        "mutation_note": "duplicated message"
+      }
+    },
+    {
+      "id": 11,
+      "direction": "gNB->AMF",
+      "protocol": "NGAP",
+      "message_type": "UplinkNASTransport",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1",
+        "TAC": "1"
+      },
+      "nas": {
+        "fields": {},
+        "security_header_type": "Integrity protected and ciphered (2)"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 12,
+      "direction": "AMF->gNB",
+      "protocol": "NGAP",
+      "message_type": "DownlinkNASTransport",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1"
+      },
+      "nas": {
+        "fields": {},
+        "security_header_type": "Integrity protected and ciphered (2)"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 13,
+      "direction": "AMF->gNB",
+      "protocol": "NGAP",
+      "message_type": "PDUSessionResourceSetupRequest",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1"
+      },
+      "nas": {
+        "fields": {},
+        "security_header_type": "Integrity protected and ciphered (2)"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    },
+    {
+      "id": 14,
+      "direction": "gNB->AMF",
+      "protocol": "NGAP",
+      "message_type": "PDUSessionResourceSetupResponse",
+      "ngap_fields": {
+        "AMF_UE_NGAP_ID": "2",
+        "RAN_UE_NGAP_ID": "1",
+        "TAC": "1"
+      },
+      "metadata": {
+        "source": "tshark-text"
+      }
+    }
+  ],
+  "mutation_history": [
+    {
+      "mutation": "duplicate-message",
+      "index": 9
+    }
+  ]
+}

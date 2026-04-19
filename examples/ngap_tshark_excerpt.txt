@@ -1,0 +1,59 @@
+Frame 5: Packet, 132 bytes on wire (1056 bits), 132 bytes captured (1056 bits) on interface any, id 0
+Internet Protocol Version 4, Src: 127.0.0.1, Dst: 127.0.0.5
+NG Application Protocol (NGSetupRequest)
+    NGAP-PDU: initiatingMessage (0)
+        initiatingMessage
+            procedureCode: id-NGSetup (21)
+            value
+                NGSetupRequest
+                    protocolIEs: 4 items
+                        Item 2: id-SupportedTAList
+                            ProtocolIE-Field
+                                value
+                                    SupportedTAList: 1 item
+                                        Item 0
+                                            SupportedTAItem
+                                                tAC: 1 (0x000001)
+
+Frame 7: Packet, 120 bytes on wire (960 bits), 120 bytes captured (960 bits) on interface any, id 0
+Internet Protocol Version 4, Src: 127.0.0.5, Dst: 127.0.0.1
+NG Application Protocol (NGSetupResponse)
+    NGAP-PDU: successfulOutcome (1)
+        successfulOutcome
+            procedureCode: id-NGSetup (21)
+            value
+                NGSetupResponse
+
+Frame 11: Packet, 408 bytes on wire (3264 bits), 408 bytes captured (3264 bits) on interface any, id 0
+Internet Protocol Version 4, Src: 127.0.0.1, Dst: 127.0.0.5
+NG Application Protocol (InitialUEMessage)
+    NGAP-PDU: initiatingMessage (0)
+        initiatingMessage
+            value
+                InitialUEMessage
+                    protocolIEs: 3 items
+                        Item 0: id-RAN-UE-NGAP-ID
+                            ProtocolIE-Field
+                                value
+                                    RAN-UE-NGAP-ID: 1
+NAS 5GS Mobility Management Message Type: Registration request (0x41)
+Security header type: Plain 5GS NAS message (0x0)
+
+Frame 14: Packet, 192 bytes on wire (1536 bits), 192 bytes captured (1536 bits) on interface any, id 0
+Internet Protocol Version 4, Src: 127.0.0.5, Dst: 127.0.0.1
+NG Application Protocol (DownlinkNASTransport)
+    NGAP-PDU: initiatingMessage (0)
+        initiatingMessage
+            value
+                DownlinkNASTransport
+                    protocolIEs: 4 items
+                        Item 0: id-AMF-UE-NGAP-ID
+                            ProtocolIE-Field
+                                value
+                                    AMF-UE-NGAP-ID: 1
+                        Item 1: id-RAN-UE-NGAP-ID
+                            ProtocolIE-Field
+                                value
+                                    RAN-UE-NGAP-ID: 1
+NAS 5GS Mobility Management Message Type: Authentication request (0x56)
+Security header type: Plain 5GS NAS message (0x0)

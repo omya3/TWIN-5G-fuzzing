@@ -1,0 +1,29 @@
+*
+!.gitignore
+!README.md
+!requirements.txt
+!docs/
+!docs/**
+!examples/
+!examples/**
+!proxy/
+!proxy/**
+!remote_traces/
+!remote_traces/**
+!scripts/
+!scripts/**
+!src/
+!src/**
+
+# Python/cache noise inside tracked folders
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Local/editor clutter
+**/.DS_Store
+~$*
+
+# Build/runtime artifacts
+proxy/sctp_ngap_proxy
+remote_traces/*.log
