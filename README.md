@@ -1,164 +1,74 @@
-# 5G Control-Plane Fuzzing Prototype
+# TWiN NAS Fuzzing Prototype
 
-This workspace contains the first implementation scaffold for a term project
-inspired by `RANsacked`, focused on extending LTE/5G RAN-core fuzzing toward:
+This repository contains the implementation code for a 5G control-plane fuzzing
+prototype focused on:
 
 - NAS-aware structured mutation
-- procedure-level stateful mutation
-- later hybrid valid/invalid fuzzing and LLM-assisted rule extraction
+- campaign planning and result tracking
+- live proxy-based mutation for supported plain `Registration Request` cases
+- nested/protected NAS mutation support through simulation
 
-## Immediate Goal
+The current strongest implemented path is the 5GS NAS `Registration Request`
+campaign against an `Open5GS + UERANSIM` testbed.
 
-Build a software-only prototype around `Open5GS + UERANSIM` that can:
+## Repository Scope
 
-1. capture valid NGAP/NAS traces,
-2. replay or model them as structured procedure traces,
-3. apply controlled mutations,
-4. compare the behavior against simpler baselines.
+This GitHub-ready snapshot intentionally includes only the project code and
+automation scripts:
 
-## What Is Implemented Here
+- `src/ngap_nas_fuzz/` - Python campaign, scheduler, mutation, and CLI logic
+- `proxy/` - C SCTP NGAP proxy used for live mutation injection
+- `scripts/` - helper scripts for capture and campaign support
 
-This initial scaffold includes:
+Local experiment traces, presentation assets, and draft notes are kept outside
+the published repository.
 
-- a concrete work plan in [docs/work-plan.md](/Users/sailor_omkar/Documents/Mtech_RA_Courses/sem_4/TWIN/docs/work-plan.md)
-- a small Python package for structured trace mutation under
-  [src/ngap_nas_fuzz](/Users/sailor_omkar/Documents/Mtech_RA_Courses/sem_4/TWIN/src/ngap_nas_fuzz)
-- an example procedure trace in
-  [examples/initial_registration_trace.json](/Users/sailor_omkar/Documents/Mtech_RA_Courses/sem_4/TWIN/examples/initial_registration_trace.json)
+## Key Implemented Components
 
-The current code is intentionally offline and protocol-agnostic at the wire
-level. It gives us a clean place to implement mutation logic before coupling it
-to real `pcap` or `tshark` output from the remote machine.
+- structured NAS mutation catalog for `Registration Request`
+- field-aware locator logic for plain and nested NAS structures
+- generic patch templates for reusable mutation logic
+- execution bridge for live vs simulation-supported operators
+- campaign planning, classification, recording, summary, and report export
+- SCTP NGAP proxy mutations for supported live plain-message cases
 
-The current scaffold also includes a small proxy-preparation layer:
-
-- a byte-level initial NAS mutation policy for the proxy MVP
-- a local proxy-runtime simulation scaffold that applies those policies to a
-  structured trace as if a live proxy had intercepted `InitialUEMessage`
-- a CLI preview command to show how the first `Registration Request` NAS bytes
-  would change before we wire the live relay
-- a proxy MVP runbook in
-  [docs/proxy-mvp-plan.md](/Users/sailor_omkar/Documents/Mtech_RA_Courses/sem_4/TWIN/docs/proxy-mvp-plan.md)
-- a practical stage-by-stage roadmap in
-  [docs/proxy-roadmap.md](/Users/sailor_omkar/Documents/Mtech_RA_Courses/sem_4/TWIN/docs/proxy-roadmap.md)
-- a NAS message/state mutation catalog in
-  [docs/nas-message-state-catalog.md](/Users/sailor_omkar/Documents/Mtech_RA_Courses/sem_4/TWIN/docs/nas-message-state-catalog.md)
-
-## Project Structure
+## Project Layout
 
 ```text
-docs/                   work plan and project notes
-examples/               sample structured traces
-src/ngap_nas_fuzz/      mutation logic and CLI
+src/ngap_nas_fuzz/   Python package for mutation and campaign tooling
+proxy/               SCTP NGAP proxy implementation
+scripts/             helper scripts for setup/capture/export
+requirements.txt     minimal Python dependency list
 ```
 
-## Quick Start
+## Current Status
 
-From this directory:
+- live `Registration Request` mutation coverage is strong for the currently
+  supported operator set
+- nested optional-IE mutation coverage is supported in simulation
+- protected/nested live execution remains future work
 
-```bash
-python3 -m src.ngap_nas_fuzz.cli show \
-  --input examples/initial_registration_trace.json
+## Minimal Usage
 
-python3 -m src.ngap_nas_fuzz.cli mutate \
-  --input examples/initial_registration_trace.json \
-  --output /tmp/mutated_trace.json \
-  --mutation duplicate-message \
-  --index 5
-```
-
-You can also try NAS-aware mutation:
-
-```bash
-python3 -m src.ngap_nas_fuzz.cli mutate \
-  --input examples/initial_registration_trace.json \
-  --output /tmp/mutated_trace.json \
-  --mutation nas-security-header \
-  --index 1 \
-  --value "Integrity protected"
-```
-
-You can extract a structured trace from `tshark -V` output:
-
-```bash
-python3 -m src.ngap_nas_fuzz.cli extract-text \
-  --input examples/ngap_tshark_excerpt.txt \
-  --output /tmp/extracted_trace.json \
-  --procedure "Captured Registration Flow"
-
-python3 -m src.ngap_nas_fuzz.cli show --input /tmp/extracted_trace.json
-```
-
-You can also preview the exact byte-level mutation that the proxy MVP should
-apply to the first `Registration Request`:
-
-```bash
-python3 -m src.ngap_nas_fuzz.cli preview-initial-nas-mutation \
-  --input remote_traces/ngap-registration-core-augmented.json \
-  --mutation mobile-identity-length-zero
-```
-
-You can also simulate how the future proxy would mutate the first live
-`InitialUEMessage` while forwarding all other messages unchanged:
-
-```bash
-python3 -m src.ngap_nas_fuzz.cli simulate-proxy-initial-nas \
-  --input remote_traces/ngap-registration-core-augmented.json \
-  --output /tmp/proxy-simulated-trace.json \
-  --mutation message-type \
-  --value 0x5c
-```
-
-You can also inspect the current NAS message/state mutation catalog:
+From the repository root:
 
 ```bash
 python3 -m src.ngap_nas_fuzz.cli show-nas-catalog
-```
 
-You can list concrete mutation candidates for one NAS message:
-
-```bash
 python3 -m src.ngap_nas_fuzz.cli show-nas-candidates \
   --message "Registration Request" \
   --executable-only
 ```
 
-You can also ask the scheduler what to fuzz next based on earlier outcomes:
+For the live proxy component:
 
 ```bash
-python3 -m src.ngap_nas_fuzz.cli recommend-nas-next \
-  --message "Registration Request" \
-  --history examples/nas_campaign_history_example.json \
-  --limit 6
+cd proxy
+make
 ```
 
-You can turn those scheduler recommendations into concrete proxy runs:
+## Notes
 
-```bash
-python3 -m src.ngap_nas_fuzz.cli plan-proxy-nas-campaign \
-  --message "Registration Request" \
-  --history examples/nas_campaign_history_example.json \
-  --output /tmp/nas-plan.json \
-  --limit 6
-```
-
-After you execute one run on the remote machine, you can append the result
-back into structured scheduler history:
-
-```bash
-python3 -m src.ngap_nas_fuzz.cli record-proxy-nas-observation \
-  --plan /tmp/nas-plan.json \
-  --run-id registration-request-mobile-identity-length-corruption-mobile-identity-length-zero \
-  --result-class deep-decoder-failure \
-  --history /tmp/nas-history.json \
-  --notes "AMF log shows ogs_nas_5gmm_decode() failed"
-```
-
-## Next Integration Step
-
-Once the remote machine details are available, the next layer will be:
-
-1. Open5GS/UERANSIM setup validation
-2. trace capture using `tshark`/`tcpdump`
-3. conversion of captured traces into the structured JSON form used here
-4. replay or proxy-based mutation against the AMF
+This repository is a code-focused publication snapshot for the mid-term project
+milestone. Experiment-specific traces and presentation materials are maintained
+locally outside the published code snapshot.
