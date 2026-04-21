@@ -34,17 +34,22 @@ struct ProxyConfig
     bool mutate_mobile_identity_length;
     bool mutate_mobile_identity_tail_bcd;
     bool mutate_mobile_identity_type_bits;
+    bool mutate_nested_optional_ie_omit;
+    bool mutate_nested_optional_ie_bad_length;
     uint8_t initial_nas_target_msgtype;
     uint8_t registration_type_and_ngksi_target;
     uint8_t initial_nas_target_security_header;
     uint8_t mobile_identity_tail_bcd_target;
+    uint8_t nested_optional_ie_tag;
+    uint8_t nested_optional_ie_bad_length_target;
+    const char *nested_optional_ie_name;
     uint16_t mobile_identity_length_target;
     int preview_bytes;
 };
 
 struct ProxyRuntime
 {
-    bool initial_nas_mutation_applied;
+    bool selected_nas_mutation_applied;
 };
 
 static void handle_signal(int sig)
@@ -63,6 +68,10 @@ static void usage(const char *program)
             "          [--mutate-mobile-identity-length WORD]\n"
             "          [--mutate-mobile-identity-tail-bcd BYTE]\n"
             "          [--mutate-mobile-identity-type-bits]\n"
+            "          [--mutate-nested-requested-nssai-omit]\n"
+            "          [--mutate-nested-requested-nssai-bad-length BYTE]\n"
+            "          [--mutate-nested-fivegmm-capability-omit]\n"
+            "          [--mutate-nested-fivegmm-capability-bad-length BYTE]\n"
             "          [--mutate-mobile-identity-length-zero]\n"
             "\n"
             "Transport-only SCTP NGAP proxy. It forwards SCTP messages unchanged while preserving\n"
@@ -77,7 +86,9 @@ static void usage(const char *program)
             "patch the Registration Request mobile-identity tail octet 0x2e -> another value\n"
             "such as 0x2a to inject an invalid BCD digit, or\n"
             "toggle the first mobile-identity payload octet 0x01 -> 0x06 to make the\n"
-            "identity type bits inconsistent.\n"
+            "identity type bits inconsistent, or\n"
+            "remove or corrupt optional IEs such as Requested NSSAI or 5GMM capability\n"
+            "inside a later nested Registration Request carried in an uplink protected NAS payload.\n"
             "\n"
             "Defaults:\n"
             "  --listen-ip   %s\n"
@@ -145,10 +156,15 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         .mutate_mobile_identity_length = false,
         .mutate_mobile_identity_tail_bcd = false,
         .mutate_mobile_identity_type_bits = false,
+        .mutate_nested_optional_ie_omit = false,
+        .mutate_nested_optional_ie_bad_length = false,
         .initial_nas_target_msgtype = 0x5c,
         .registration_type_and_ngksi_target = 0x00,
         .initial_nas_target_security_header = 0x01,
         .mobile_identity_tail_bcd_target = 0x2a,
+        .nested_optional_ie_tag = 0x00,
+        .nested_optional_ie_bad_length_target = 0xff,
+        .nested_optional_ie_name = "nested optional IE",
         .mobile_identity_length_target = 0x000d,
         .preview_bytes = 12,
     };
@@ -223,6 +239,34 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         {
             cfg.mutate_mobile_identity_type_bits = true;
         }
+        else if (strcmp(argv[i], "--mutate-nested-requested-nssai-omit") == 0)
+        {
+            cfg.mutate_nested_optional_ie_omit = true;
+            cfg.nested_optional_ie_tag = 0x2f;
+            cfg.nested_optional_ie_name = "Requested NSSAI";
+        }
+        else if (strcmp(argv[i], "--mutate-nested-requested-nssai-bad-length") == 0 && i + 1 < argc)
+        {
+            cfg.mutate_nested_optional_ie_bad_length = true;
+            cfg.nested_optional_ie_tag = 0x2f;
+            cfg.nested_optional_ie_name = "Requested NSSAI";
+            cfg.nested_optional_ie_bad_length_target =
+                parse_byte_arg("--mutate-nested-requested-nssai-bad-length", argv[++i]);
+        }
+        else if (strcmp(argv[i], "--mutate-nested-fivegmm-capability-omit") == 0)
+        {
+            cfg.mutate_nested_optional_ie_omit = true;
+            cfg.nested_optional_ie_tag = 0x10;
+            cfg.nested_optional_ie_name = "5GMM capability";
+        }
+        else if (strcmp(argv[i], "--mutate-nested-fivegmm-capability-bad-length") == 0 && i + 1 < argc)
+        {
+            cfg.mutate_nested_optional_ie_bad_length = true;
+            cfg.nested_optional_ie_tag = 0x10;
+            cfg.nested_optional_ie_name = "5GMM capability";
+            cfg.nested_optional_ie_bad_length_target =
+                parse_byte_arg("--mutate-nested-fivegmm-capability-bad-length", argv[++i]);
+        }
         else
         {
             usage(argv[0]);
@@ -243,11 +287,15 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         mutation_modes++;
     if (cfg.mutate_mobile_identity_type_bits)
         mutation_modes++;
+    if (cfg.mutate_nested_optional_ie_omit)
+        mutation_modes++;
+    if (cfg.mutate_nested_optional_ie_bad_length)
+        mutation_modes++;
 
     if (mutation_modes > 1)
     {
         fprintf(stderr,
-                "Choose only one mutation mode at a time: message-type, registration-type-and-ngksi, security-header, mobile-identity-length, mobile-identity-tail-bcd, or mobile-identity-type-bits.\n");
+                "Choose only one mutation mode at a time: message-type, registration-type-and-ngksi, security-header, mobile-identity-length, mobile-identity-tail-bcd, mobile-identity-type-bits, nested-requested-nssai-omit, nested-requested-nssai-bad-length, nested-fivegmm-capability-omit, or nested-fivegmm-capability-bad-length.\n");
         exit(2);
     }
 
@@ -366,22 +414,33 @@ static void log_preview_bytes(const unsigned char *buffer, ssize_t n, int previe
     fputc('\n', stderr);
 }
 
-static bool maybe_patch_initial_nas(
+static void remove_octet_span(unsigned char *buffer, ssize_t *n_inout, ssize_t offset, ssize_t length)
+{
+    memmove(buffer + offset,
+            buffer + offset + length,
+            (size_t)(*n_inout - (offset + length)));
+    *n_inout -= length;
+}
+
+static bool maybe_patch_selected_nas(
     const struct ProxyConfig *cfg,
     struct ProxyRuntime *runtime,
     int from_fd,
     int gnb_fd,
     unsigned char *buffer,
-    ssize_t n)
+    ssize_t *n_inout)
 {
+    ssize_t n = *n_inout;
     if (!cfg->mutate_initial_nas_msgtype &&
         !cfg->mutate_registration_type_and_ngksi &&
         !cfg->mutate_initial_nas_security_header &&
         !cfg->mutate_mobile_identity_length &&
         !cfg->mutate_mobile_identity_tail_bcd &&
-        !cfg->mutate_mobile_identity_type_bits)
+        !cfg->mutate_mobile_identity_type_bits &&
+        !cfg->mutate_nested_optional_ie_omit &&
+        !cfg->mutate_nested_optional_ie_bad_length)
         return false;
-    if (runtime->initial_nas_mutation_applied)
+    if (runtime->selected_nas_mutation_applied)
         return false;
     if (from_fd != gnb_fd)
         return false;
@@ -399,7 +458,7 @@ static bool maybe_patch_initial_nas(
                         i + 2,
                         cfg->initial_nas_target_msgtype);
                 buffer[i + 2] = cfg->initial_nas_target_msgtype;
-                runtime->initial_nas_mutation_applied = true;
+                runtime->selected_nas_mutation_applied = true;
                 return true;
             }
         }
@@ -416,7 +475,7 @@ static bool maybe_patch_initial_nas(
                         i + 1,
                         cfg->initial_nas_target_security_header);
                 buffer[i + 1] = cfg->initial_nas_target_security_header;
-                runtime->initial_nas_mutation_applied = true;
+                runtime->selected_nas_mutation_applied = true;
                 return true;
             }
         }
@@ -434,7 +493,7 @@ static bool maybe_patch_initial_nas(
                         buffer[i + 3],
                         cfg->registration_type_and_ngksi_target);
                 buffer[i + 3] = cfg->registration_type_and_ngksi_target;
-                runtime->initial_nas_mutation_applied = true;
+                runtime->selected_nas_mutation_applied = true;
                 return true;
             }
         }
@@ -457,7 +516,7 @@ static bool maybe_patch_initial_nas(
                         cfg->mobile_identity_length_target);
                 buffer[i + 4] = (unsigned char)((cfg->mobile_identity_length_target >> 8) & 0xff);
                 buffer[i + 5] = (unsigned char)(cfg->mobile_identity_length_target & 0xff);
-                runtime->initial_nas_mutation_applied = true;
+                runtime->selected_nas_mutation_applied = true;
                 return true;
             }
         }
@@ -479,7 +538,7 @@ static bool maybe_patch_initial_nas(
                         i + 19,
                         cfg->mobile_identity_tail_bcd_target);
                 buffer[i + 19] = cfg->mobile_identity_tail_bcd_target;
-                runtime->initial_nas_mutation_applied = true;
+                runtime->selected_nas_mutation_applied = true;
                 return true;
             }
         }
@@ -500,8 +559,65 @@ static bool maybe_patch_initial_nas(
                         i + 6,
                         buffer[i + 6]);
                 buffer[i + 6] = 0x06;
-                runtime->initial_nas_mutation_applied = true;
+                runtime->selected_nas_mutation_applied = true;
                 return true;
+            }
+        }
+    }
+
+    if (cfg->mutate_nested_optional_ie_omit || cfg->mutate_nested_optional_ie_bad_length)
+    {
+        if (n < 8)
+            return false;
+
+        for (ssize_t start = 1; start <= n - 6; start++)
+        {
+            if (buffer[start] != 0x7e || buffer[start + 1] != 0x00 || buffer[start + 2] != 0x41 ||
+                buffer[start + 3] != 0x79)
+                continue;
+
+            ssize_t mobile_identity_length = ((ssize_t)buffer[start + 4] << 8) | buffer[start + 5];
+            ssize_t tlv_offset = start + 6 + mobile_identity_length;
+            if (mobile_identity_length < 0 || tlv_offset > n)
+                continue;
+
+            for (ssize_t pos = tlv_offset; pos <= n - 2;)
+            {
+                uint8_t tag = buffer[pos];
+                ssize_t value_length = buffer[pos + 1];
+                ssize_t total_length = 2 + value_length;
+
+                if (pos + total_length > n)
+                    break;
+
+                if (tag == cfg->nested_optional_ie_tag)
+                {
+                    if (cfg->mutate_nested_optional_ie_omit)
+                    {
+                        fprintf(stderr,
+                                "[proxy] removing nested %s IE at outer offset=%zd nested_rr_offset=%zd total_length=%zd\n",
+                                cfg->nested_optional_ie_name,
+                                pos,
+                                start,
+                                total_length);
+                        remove_octet_span(buffer, n_inout, pos, total_length);
+                    }
+                    else
+                    {
+                        fprintf(stderr,
+                                "[proxy] patching nested %s IE length at outer offset=%zd nested_rr_offset=%zd 0x%02x -> 0x%02x\n",
+                                cfg->nested_optional_ie_name,
+                                pos + 1,
+                                start,
+                                buffer[pos + 1],
+                                cfg->nested_optional_ie_bad_length_target);
+                        buffer[pos + 1] = cfg->nested_optional_ie_bad_length_target;
+                    }
+                    runtime->selected_nas_mutation_applied = true;
+                    return true;
+                }
+
+                pos += total_length;
             }
         }
     }
@@ -552,7 +668,7 @@ static bool forward_one_message(
             stream,
             ppid);
     log_preview_bytes(buffer, n, cfg->preview_bytes);
-    maybe_patch_initial_nas(cfg, runtime, from_fd, gnb_fd, buffer, n);
+    maybe_patch_selected_nas(cfg, runtime, from_fd, gnb_fd, buffer, &n);
 
     int sent = sctp_sendmsg(to_fd,
                             buffer,
@@ -670,6 +786,19 @@ int main(int argc, char **argv)
         fprintf(stderr,
                 "[proxy] mobile-identity-type-bits mutation enabled: 0x01 -> 0x06\n");
     }
+    if (cfg.mutate_nested_optional_ie_omit)
+    {
+        fprintf(stderr,
+                "[proxy] nested %s omit mutation enabled for later nested Registration Request packets\n",
+                cfg.nested_optional_ie_name);
+    }
+    if (cfg.mutate_nested_optional_ie_bad_length)
+    {
+        fprintf(stderr,
+                "[proxy] nested %s bad-length mutation enabled for later nested Registration Request packets: 0x%02x\n",
+                cfg.nested_optional_ie_name,
+                cfg.nested_optional_ie_bad_length_target);
+    }
 
     int listener = create_listener(&cfg);
     fprintf(stderr, "[proxy] waiting for gNB SCTP association...\n");
@@ -699,7 +828,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "[proxy] connected to AMF\n");
 
     struct ProxyRuntime runtime = {
-        .initial_nas_mutation_applied = false,
+        .selected_nas_mutation_applied = false,
     };
 
     int rc = relay_loop_with_config(&cfg, &runtime, gnb_fd, amf_fd);

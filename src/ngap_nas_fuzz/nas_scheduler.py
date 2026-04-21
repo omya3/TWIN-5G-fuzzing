@@ -388,10 +388,12 @@ def recommend_next_candidates(
     normalized = _normalize_message_name(message_name)
     relevant_history = [entry for entry in history if entry.message_name == normalized]
 
-    tried_exact = {
-        (entry.message_name, entry.family_name, entry.operator): entry
-        for entry in relevant_history
-    }
+    tried_exact: dict[tuple[str, str, str], list[NasCampaignObservation]] = {}
+    for entry in relevant_history:
+        tried_exact.setdefault(
+            (entry.message_name, entry.family_name, entry.operator),
+            [],
+        ).append(entry)
     tried_runtime = {}
     for entry in relevant_history:
         runtime_key = _observation_runtime_key(entry)
@@ -458,7 +460,15 @@ def recommend_next_candidates(
 
         tried = tried_runtime.get(_candidate_runtime_key(candidate))
         if tried is None:
-            tried = tried_exact.get(_candidate_key(candidate))
+            exact_matches = tried_exact.get(_candidate_key(candidate), [])
+            candidate_is_simulation = candidate.execution_mode == "nested-simulation"
+            matching_mode = [
+                entry
+                for entry in exact_matches
+                if (entry.result_class == RESULT_SIMULATION_ARTIFACT) == candidate_is_simulation
+            ]
+            if matching_mode:
+                tried = matching_mode[-1]
         if tried is None:
             score += 10
             reasons.append("untried operator")

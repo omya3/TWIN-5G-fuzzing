@@ -218,6 +218,8 @@ def _result_hint(proxy_mutation: str) -> str:
         return "expected mobile identity decode failure"
     if proxy_mutation == "mobile-identity-toggle-type-bits":
         return "expected mobile identity decode failure"
+    if proxy_mutation.startswith("nested-"):
+        return "expected later nested optional-IE handling result"
     if proxy_mutation == "security-header":
         return "expected security-header handling result"
     return "expected NAS handling result"
@@ -225,7 +227,7 @@ def _result_hint(proxy_mutation: str) -> str:
 
 def _proxy_command(logs_dir: str, proxy_mutation: str, value: str | None) -> str:
     parts = [
-        "cd ~/twin-proxy",
+        "cd ~/TWIN/proxy",
         "./sctp_ngap_proxy --preview-bytes 24",
     ]
     parts[-1] += render_proxy_command_flag(proxy_mutation, value)

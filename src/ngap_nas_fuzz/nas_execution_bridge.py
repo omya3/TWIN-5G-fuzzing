@@ -59,16 +59,44 @@ _EXECUTION_BRIDGES: tuple[NasExecutionBridge, ...] = (
     NasExecutionBridge(
         message_name="Registration Request",
         family_name="requested NSSAI corruption",
+        proxy_mutation="nested-requested-nssai-omit",
+        execution_mode="proxy",
+        operator_pattern=r"^omit ie entirely$",
+    ),
+    NasExecutionBridge(
+        message_name="Registration Request",
+        family_name="requested NSSAI corruption",
+        proxy_mutation="nested-requested-nssai-bad-length",
+        execution_mode="proxy",
+        operator_pattern=r"^invalid length$",
+    ),
+    NasExecutionBridge(
+        message_name="Registration Request",
+        family_name="requested NSSAI corruption",
         proxy_mutation="nested-registration-request-optional-ie",
         execution_mode="nested-simulation",
-        operator_pattern=r"^(omit ie entirely|duplicate ie|invalid length|unsupported sst/sd combination|duplicate nssai entries)$",
+        operator_pattern=r"^(duplicate ie|unsupported sst/sd combination|duplicate nssai entries)$",
+    ),
+    NasExecutionBridge(
+        message_name="Registration Request",
+        family_name="5GMM capability corruption",
+        proxy_mutation="nested-fivegmm-capability-omit",
+        execution_mode="proxy",
+        operator_pattern=r"^omit ie entirely$",
+    ),
+    NasExecutionBridge(
+        message_name="Registration Request",
+        family_name="5GMM capability corruption",
+        proxy_mutation="nested-fivegmm-capability-bad-length",
+        execution_mode="proxy",
+        operator_pattern=r"^oversized length$",
     ),
     NasExecutionBridge(
         message_name="Registration Request",
         family_name="5GMM capability corruption",
         proxy_mutation="nested-registration-request-optional-ie",
         execution_mode="nested-simulation",
-        operator_pattern=r"^(omit ie entirely|oversized length|reserved bits set|truncation)$",
+        operator_pattern=r"^(reserved bits set|truncation)$",
     ),
 )
 
@@ -114,7 +142,13 @@ def resolve_operator_execution(
         else:
             proxy_value = None
     else:
-        proxy_value = match.group(1) if match.groups() else None
+        if bridge.proxy_mutation in {
+            "nested-requested-nssai-bad-length",
+            "nested-fivegmm-capability-bad-length",
+        }:
+            proxy_value = "0xff"
+        else:
+            proxy_value = match.group(1) if match.groups() else None
     return (True, bridge.execution_mode, bridge.proxy_mutation, proxy_value)
 
 
@@ -158,6 +192,14 @@ def render_operator_for_value(base_operator: str, proxy_mutation: str, value: st
 def render_proxy_command_flag(proxy_mutation: str, value: str | None) -> str:
     if proxy_mutation == "mobile-identity-toggle-type-bits":
         return " --mutate-mobile-identity-type-bits"
+    if proxy_mutation == "nested-requested-nssai-omit":
+        return " --mutate-nested-requested-nssai-omit"
+    if proxy_mutation == "nested-requested-nssai-bad-length":
+        return f" --mutate-nested-requested-nssai-bad-length {value or '0xff'}"
+    if proxy_mutation == "nested-fivegmm-capability-omit":
+        return " --mutate-nested-fivegmm-capability-omit"
+    if proxy_mutation == "nested-fivegmm-capability-bad-length":
+        return f" --mutate-nested-fivegmm-capability-bad-length {value or '0xff'}"
     if value is None:
         return ""
     if proxy_mutation == "message-type":
