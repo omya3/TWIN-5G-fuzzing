@@ -89,7 +89,7 @@ def generate_mutation_operators(
         return tuple(f"{label} length" for label in labels)
 
     if rule.strategy == "payload-truncation":
-        if field_kind not in {"optional_tlv", "tlv_payload", "identity"}:
+        if field_kind not in {"optional_tlv", "tlv_payload", "identity", "payload"}:
             raise ValueError(
                 f"Field '{field_name}' uses payload-truncation but has kind '{field_kind}'."
             )

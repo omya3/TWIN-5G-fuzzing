@@ -36,6 +36,11 @@ struct ProxyConfig
     bool mutate_mobile_identity_type_bits;
     bool mutate_nested_optional_ie_omit;
     bool mutate_nested_optional_ie_bad_length;
+    bool mutate_nested_optional_ie_duplicate;
+    bool mutate_nested_optional_ie_unsupported_sst_sd;
+    bool mutate_nested_optional_ie_duplicate_payload_entries;
+    bool mutate_nested_optional_ie_set_reserved_bits;
+    bool mutate_nested_optional_ie_truncate_payload;
     uint8_t initial_nas_target_msgtype;
     uint8_t registration_type_and_ngksi_target;
     uint8_t initial_nas_target_security_header;
@@ -68,6 +73,7 @@ static void usage(const char *program)
             "          [--mutate-mobile-identity-length WORD]\n"
             "          [--mutate-mobile-identity-tail-bcd BYTE]\n"
             "          [--mutate-mobile-identity-type-bits]\n"
+            "          [--mutate-nested-optional-ie SPEC]\n"
             "          [--mutate-nested-requested-nssai-omit]\n"
             "          [--mutate-nested-requested-nssai-bad-length BYTE]\n"
             "          [--mutate-nested-fivegmm-capability-omit]\n"
@@ -89,6 +95,16 @@ static void usage(const char *program)
             "identity type bits inconsistent, or\n"
             "remove or corrupt optional IEs such as Requested NSSAI or 5GMM capability\n"
             "inside a later nested Registration Request carried in an uplink protected NAS payload.\n"
+            "For the generic nested optional-IE flag, SPEC can look like:\n"
+            "  field:requested_nssai,action:omit\n"
+            "  field:requested_nssai,action:bad-length,length:0xff\n"
+            "  field:requested_nssai,action:duplicate\n"
+            "  field:requested_nssai,action:unsupported-sst-sd\n"
+            "  field:requested_nssai,action:duplicate-payload-entries\n"
+            "  field:fivegmm_capability,action:omit\n"
+            "  field:fivegmm_capability,action:bad-length,length:0xff\n"
+            "  field:fivegmm_capability,action:set-reserved-bits\n"
+            "  field:fivegmm_capability,action:truncate-payload\n"
             "\n"
             "Defaults:\n"
             "  --listen-ip   %s\n"
@@ -142,6 +158,160 @@ static uint16_t parse_word_arg(const char *name, const char *value)
     return (uint16_t)parsed;
 }
 
+static bool read_spec_token(
+    const char *spec,
+    const char *key,
+    char *output,
+    size_t output_size)
+{
+    size_t key_length = strlen(key);
+    const char *cursor = spec;
+
+    while (cursor && *cursor)
+    {
+        const char *next = strchr(cursor, ',');
+        size_t token_length = next ? (size_t)(next - cursor) : strlen(cursor);
+
+        if (token_length > key_length + 1 &&
+            strncmp(cursor, key, key_length) == 0 &&
+            cursor[key_length] == ':')
+        {
+            size_t value_length = token_length - key_length - 1;
+            if (value_length >= output_size)
+            {
+                fprintf(stderr, "Nested optional IE spec value too long for key '%s'\n", key);
+                exit(2);
+            }
+            memcpy(output, cursor + key_length + 1, value_length);
+            output[value_length] = '\0';
+            return true;
+        }
+
+        cursor = next ? next + 1 : NULL;
+    }
+
+    return false;
+}
+
+static void configure_nested_optional_ie_field(struct ProxyConfig *cfg, const char *field_name)
+{
+    if (strcmp(field_name, "requested_nssai") == 0)
+    {
+        cfg->nested_optional_ie_tag = 0x2f;
+        cfg->nested_optional_ie_name = "Requested NSSAI";
+        return;
+    }
+
+    if (strcmp(field_name, "fivegmm_capability") == 0)
+    {
+        cfg->nested_optional_ie_tag = 0x10;
+        cfg->nested_optional_ie_name = "5GMM capability";
+        return;
+    }
+
+    fprintf(stderr, "Unsupported nested optional IE field '%s'\n", field_name);
+    exit(2);
+}
+
+static void parse_nested_optional_ie_spec(struct ProxyConfig *cfg, const char *spec)
+{
+    char field_name[64];
+    char action[64];
+    char length_value[64];
+    bool has_field = read_spec_token(spec, "field", field_name, sizeof(field_name));
+    bool has_action = read_spec_token(spec, "action", action, sizeof(action));
+    bool has_length = read_spec_token(spec, "length", length_value, sizeof(length_value));
+
+    if (!has_field || !has_action)
+    {
+        fprintf(stderr,
+                "Invalid nested optional IE spec '%s'; expected field:<name>,action:<name>[,length:<byte>]\n",
+                spec);
+        exit(2);
+    }
+
+    configure_nested_optional_ie_field(cfg, field_name);
+
+    if (strcmp(action, "omit") == 0)
+    {
+        cfg->mutate_nested_optional_ie_omit = true;
+        return;
+    }
+
+    if (strcmp(action, "bad-length") == 0)
+    {
+        cfg->mutate_nested_optional_ie_bad_length = true;
+        cfg->nested_optional_ie_bad_length_target = has_length
+            ? parse_byte_arg("--mutate-nested-optional-ie length", length_value)
+            : 0xff;
+        return;
+    }
+
+    if (strcmp(action, "duplicate") == 0)
+    {
+        cfg->mutate_nested_optional_ie_duplicate = true;
+        return;
+    }
+
+    if (strcmp(action, "unsupported-sst-sd") == 0)
+    {
+        if (cfg->nested_optional_ie_tag != 0x2f)
+        {
+            fprintf(stderr,
+                    "Action 'unsupported-sst-sd' is only supported for requested_nssai, not '%s'\n",
+                    field_name);
+            exit(2);
+        }
+        cfg->mutate_nested_optional_ie_unsupported_sst_sd = true;
+        return;
+    }
+
+    if (strcmp(action, "duplicate-payload-entries") == 0)
+    {
+        if (cfg->nested_optional_ie_tag != 0x2f)
+        {
+            fprintf(stderr,
+                    "Action 'duplicate-payload-entries' is only supported for requested_nssai, not '%s'\n",
+                    field_name);
+            exit(2);
+        }
+        cfg->mutate_nested_optional_ie_duplicate_payload_entries = true;
+        return;
+    }
+
+    if (strcmp(action, "set-reserved-bits") == 0)
+    {
+        if (cfg->nested_optional_ie_tag != 0x10)
+        {
+            fprintf(stderr,
+                    "Action 'set-reserved-bits' is only supported for fivegmm_capability, not '%s'\n",
+                    field_name);
+            exit(2);
+        }
+        cfg->mutate_nested_optional_ie_set_reserved_bits = true;
+        return;
+    }
+
+    if (strcmp(action, "truncate-payload") == 0)
+    {
+        if (cfg->nested_optional_ie_tag != 0x10)
+        {
+            fprintf(stderr,
+                    "Action 'truncate-payload' is only supported for fivegmm_capability, not '%s'\n",
+                    field_name);
+            exit(2);
+        }
+        cfg->mutate_nested_optional_ie_truncate_payload = true;
+        return;
+    }
+
+    fprintf(stderr,
+            "Unsupported nested optional IE action '%s' in spec '%s'\n",
+            action,
+            spec);
+    exit(2);
+}
+
 static struct ProxyConfig parse_args(int argc, char **argv)
 {
     struct ProxyConfig cfg = {
@@ -158,6 +328,11 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         .mutate_mobile_identity_type_bits = false,
         .mutate_nested_optional_ie_omit = false,
         .mutate_nested_optional_ie_bad_length = false,
+        .mutate_nested_optional_ie_duplicate = false,
+        .mutate_nested_optional_ie_unsupported_sst_sd = false,
+        .mutate_nested_optional_ie_duplicate_payload_entries = false,
+        .mutate_nested_optional_ie_set_reserved_bits = false,
+        .mutate_nested_optional_ie_truncate_payload = false,
         .initial_nas_target_msgtype = 0x5c,
         .registration_type_and_ngksi_target = 0x00,
         .initial_nas_target_security_header = 0x01,
@@ -239,31 +414,31 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         {
             cfg.mutate_mobile_identity_type_bits = true;
         }
+        else if (strcmp(argv[i], "--mutate-nested-optional-ie") == 0 && i + 1 < argc)
+        {
+            parse_nested_optional_ie_spec(&cfg, argv[++i]);
+        }
         else if (strcmp(argv[i], "--mutate-nested-requested-nssai-omit") == 0)
         {
             cfg.mutate_nested_optional_ie_omit = true;
-            cfg.nested_optional_ie_tag = 0x2f;
-            cfg.nested_optional_ie_name = "Requested NSSAI";
+            configure_nested_optional_ie_field(&cfg, "requested_nssai");
         }
         else if (strcmp(argv[i], "--mutate-nested-requested-nssai-bad-length") == 0 && i + 1 < argc)
         {
             cfg.mutate_nested_optional_ie_bad_length = true;
-            cfg.nested_optional_ie_tag = 0x2f;
-            cfg.nested_optional_ie_name = "Requested NSSAI";
+            configure_nested_optional_ie_field(&cfg, "requested_nssai");
             cfg.nested_optional_ie_bad_length_target =
                 parse_byte_arg("--mutate-nested-requested-nssai-bad-length", argv[++i]);
         }
         else if (strcmp(argv[i], "--mutate-nested-fivegmm-capability-omit") == 0)
         {
             cfg.mutate_nested_optional_ie_omit = true;
-            cfg.nested_optional_ie_tag = 0x10;
-            cfg.nested_optional_ie_name = "5GMM capability";
+            configure_nested_optional_ie_field(&cfg, "fivegmm_capability");
         }
         else if (strcmp(argv[i], "--mutate-nested-fivegmm-capability-bad-length") == 0 && i + 1 < argc)
         {
             cfg.mutate_nested_optional_ie_bad_length = true;
-            cfg.nested_optional_ie_tag = 0x10;
-            cfg.nested_optional_ie_name = "5GMM capability";
+            configure_nested_optional_ie_field(&cfg, "fivegmm_capability");
             cfg.nested_optional_ie_bad_length_target =
                 parse_byte_arg("--mutate-nested-fivegmm-capability-bad-length", argv[++i]);
         }
@@ -291,11 +466,21 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         mutation_modes++;
     if (cfg.mutate_nested_optional_ie_bad_length)
         mutation_modes++;
+    if (cfg.mutate_nested_optional_ie_duplicate)
+        mutation_modes++;
+    if (cfg.mutate_nested_optional_ie_unsupported_sst_sd)
+        mutation_modes++;
+    if (cfg.mutate_nested_optional_ie_duplicate_payload_entries)
+        mutation_modes++;
+    if (cfg.mutate_nested_optional_ie_set_reserved_bits)
+        mutation_modes++;
+    if (cfg.mutate_nested_optional_ie_truncate_payload)
+        mutation_modes++;
 
     if (mutation_modes > 1)
     {
         fprintf(stderr,
-                "Choose only one mutation mode at a time: message-type, registration-type-and-ngksi, security-header, mobile-identity-length, mobile-identity-tail-bcd, mobile-identity-type-bits, nested-requested-nssai-omit, nested-requested-nssai-bad-length, nested-fivegmm-capability-omit, or nested-fivegmm-capability-bad-length.\n");
+                "Choose only one mutation mode at a time: message-type, registration-type-and-ngksi, security-header, mobile-identity-length, mobile-identity-tail-bcd, mobile-identity-type-bits, mutate-nested-optional-ie, nested-requested-nssai-omit, nested-requested-nssai-bad-length, nested-fivegmm-capability-omit, or nested-fivegmm-capability-bad-length.\n");
         exit(2);
     }
 
@@ -422,6 +607,46 @@ static void remove_octet_span(unsigned char *buffer, ssize_t *n_inout, ssize_t o
     *n_inout -= length;
 }
 
+static bool duplicate_octet_span(
+    unsigned char *buffer,
+    ssize_t *n_inout,
+    ssize_t offset,
+    ssize_t length,
+    ssize_t insert_offset)
+{
+    if (offset < 0 || length < 0 || insert_offset < 0)
+    {
+        fprintf(stderr, "[proxy] duplicate span uses a negative offset or length\n");
+        return false;
+    }
+    if (offset + length > *n_inout || insert_offset > *n_inout)
+    {
+        fprintf(stderr, "[proxy] duplicate span exceeds the current packet bounds\n");
+        return false;
+    }
+    if (*n_inout + length > BUFFER_SIZE)
+    {
+        fprintf(stderr, "[proxy] duplicate span would exceed the proxy buffer capacity\n");
+        return false;
+    }
+
+    unsigned char *copy = malloc((size_t)length);
+    if (!copy)
+    {
+        perror("malloc");
+        return false;
+    }
+
+    memcpy(copy, buffer + offset, (size_t)length);
+    memmove(buffer + insert_offset + length,
+            buffer + insert_offset,
+            (size_t)(*n_inout - insert_offset));
+    memcpy(buffer + insert_offset, copy, (size_t)length);
+    *n_inout += length;
+    free(copy);
+    return true;
+}
+
 static bool maybe_patch_selected_nas(
     const struct ProxyConfig *cfg,
     struct ProxyRuntime *runtime,
@@ -438,7 +663,12 @@ static bool maybe_patch_selected_nas(
         !cfg->mutate_mobile_identity_tail_bcd &&
         !cfg->mutate_mobile_identity_type_bits &&
         !cfg->mutate_nested_optional_ie_omit &&
-        !cfg->mutate_nested_optional_ie_bad_length)
+        !cfg->mutate_nested_optional_ie_bad_length &&
+        !cfg->mutate_nested_optional_ie_duplicate &&
+        !cfg->mutate_nested_optional_ie_unsupported_sst_sd &&
+        !cfg->mutate_nested_optional_ie_duplicate_payload_entries &&
+        !cfg->mutate_nested_optional_ie_set_reserved_bits &&
+        !cfg->mutate_nested_optional_ie_truncate_payload)
         return false;
     if (runtime->selected_nas_mutation_applied)
         return false;
@@ -565,7 +795,13 @@ static bool maybe_patch_selected_nas(
         }
     }
 
-    if (cfg->mutate_nested_optional_ie_omit || cfg->mutate_nested_optional_ie_bad_length)
+    if (cfg->mutate_nested_optional_ie_omit ||
+        cfg->mutate_nested_optional_ie_bad_length ||
+        cfg->mutate_nested_optional_ie_duplicate ||
+        cfg->mutate_nested_optional_ie_unsupported_sst_sd ||
+        cfg->mutate_nested_optional_ie_duplicate_payload_entries ||
+        cfg->mutate_nested_optional_ie_set_reserved_bits ||
+        cfg->mutate_nested_optional_ie_truncate_payload)
     {
         if (n < 8)
             return false;
@@ -602,7 +838,7 @@ static bool maybe_patch_selected_nas(
                                 total_length);
                         remove_octet_span(buffer, n_inout, pos, total_length);
                     }
-                    else
+                    else if (cfg->mutate_nested_optional_ie_bad_length)
                     {
                         fprintf(stderr,
                                 "[proxy] patching nested %s IE length at outer offset=%zd nested_rr_offset=%zd 0x%02x -> 0x%02x\n",
@@ -612,6 +848,110 @@ static bool maybe_patch_selected_nas(
                                 buffer[pos + 1],
                                 cfg->nested_optional_ie_bad_length_target);
                         buffer[pos + 1] = cfg->nested_optional_ie_bad_length_target;
+                    }
+                    else if (cfg->mutate_nested_optional_ie_duplicate)
+                    {
+                        fprintf(stderr,
+                                "[proxy] duplicating nested %s IE at outer offset=%zd nested_rr_offset=%zd total_length=%zd\n",
+                                cfg->nested_optional_ie_name,
+                                pos,
+                                start,
+                                total_length);
+                        if (!duplicate_octet_span(buffer, n_inout, pos, total_length, pos + total_length))
+                            return false;
+                    }
+                    else if (cfg->mutate_nested_optional_ie_unsupported_sst_sd)
+                    {
+                        if (value_length < 2)
+                        {
+                            fprintf(stderr,
+                                    "[proxy] cannot patch nested %s payload into unsupported SST/SD: payload length=%zd\n",
+                                    cfg->nested_optional_ie_name,
+                                    value_length);
+                            return false;
+                        }
+                        fprintf(stderr,
+                                "[proxy] patching nested %s payload at outer offsets=%zd/%zd 0x%02x:0x%02x -> 0xff:0xff\n",
+                                cfg->nested_optional_ie_name,
+                                pos + 2,
+                                pos + 3,
+                                buffer[pos + 2],
+                                buffer[pos + 3]);
+                        buffer[pos + 2] = 0xff;
+                        buffer[pos + 3] = 0xff;
+                    }
+                    else if (cfg->mutate_nested_optional_ie_duplicate_payload_entries)
+                    {
+                        if (value_length < 1)
+                        {
+                            fprintf(stderr,
+                                    "[proxy] cannot duplicate nested %s payload entries because the payload is empty\n",
+                                    cfg->nested_optional_ie_name);
+                            return false;
+                        }
+                        if (value_length > 0xff - value_length)
+                        {
+                            fprintf(stderr,
+                                    "[proxy] cannot duplicate nested %s payload entries because the new length would exceed 0xff\n",
+                                    cfg->nested_optional_ie_name);
+                            return false;
+                        }
+                        fprintf(stderr,
+                                "[proxy] duplicating nested %s payload entries at outer offset=%zd nested_rr_offset=%zd length=0x%02x -> 0x%02x\n",
+                                cfg->nested_optional_ie_name,
+                                pos + 2,
+                                start,
+                                buffer[pos + 1],
+                                (unsigned int)(value_length * 2));
+                        if (!duplicate_octet_span(
+                                buffer,
+                                n_inout,
+                                pos + 2,
+                                value_length,
+                                pos + 2 + value_length))
+                            return false;
+                        buffer[pos + 1] = (unsigned char)(value_length * 2);
+                    }
+                    else if (cfg->mutate_nested_optional_ie_set_reserved_bits)
+                    {
+                        if (value_length < 1)
+                        {
+                            fprintf(stderr,
+                                    "[proxy] cannot set reserved bits for nested %s because the payload is empty\n",
+                                    cfg->nested_optional_ie_name);
+                            return false;
+                        }
+                        fprintf(stderr,
+                                "[proxy] setting reserved bits in nested %s payload at outer offset=%zd 0x%02x -> 0xff\n",
+                                cfg->nested_optional_ie_name,
+                                pos + 2,
+                                buffer[pos + 2]);
+                        buffer[pos + 2] = 0xff;
+                    }
+                    else if (cfg->mutate_nested_optional_ie_truncate_payload)
+                    {
+                        if (value_length < 1)
+                        {
+                            fprintf(stderr,
+                                    "[proxy] cannot truncate nested %s payload because it is already empty\n",
+                                    cfg->nested_optional_ie_name);
+                            return false;
+                        }
+                        fprintf(stderr,
+                                "[proxy] truncating nested %s payload at outer offset=%zd removing 0x%02x and length 0x%02x -> 0x%02x\n",
+                                cfg->nested_optional_ie_name,
+                                pos + 1 + value_length,
+                                buffer[pos + 1 + value_length],
+                                buffer[pos + 1],
+                                (unsigned int)(value_length - 1));
+                        remove_octet_span(buffer, n_inout, pos + 1 + value_length, 1);
+                        buffer[pos + 1] = (unsigned char)(value_length - 1);
+                    }
+                    else
+                    {
+                        fprintf(stderr,
+                                "[proxy] nested optional IE mutation mode was selected but no action matched\n");
+                        return false;
                     }
                     runtime->selected_nas_mutation_applied = true;
                     return true;
@@ -798,6 +1138,36 @@ int main(int argc, char **argv)
                 "[proxy] nested %s bad-length mutation enabled for later nested Registration Request packets: 0x%02x\n",
                 cfg.nested_optional_ie_name,
                 cfg.nested_optional_ie_bad_length_target);
+    }
+    if (cfg.mutate_nested_optional_ie_duplicate)
+    {
+        fprintf(stderr,
+                "[proxy] nested %s duplicate-IE mutation enabled for later nested Registration Request packets\n",
+                cfg.nested_optional_ie_name);
+    }
+    if (cfg.mutate_nested_optional_ie_unsupported_sst_sd)
+    {
+        fprintf(stderr,
+                "[proxy] nested %s unsupported-SST/SD mutation enabled for later nested Registration Request packets\n",
+                cfg.nested_optional_ie_name);
+    }
+    if (cfg.mutate_nested_optional_ie_duplicate_payload_entries)
+    {
+        fprintf(stderr,
+                "[proxy] nested %s duplicate-payload-entries mutation enabled for later nested Registration Request packets\n",
+                cfg.nested_optional_ie_name);
+    }
+    if (cfg.mutate_nested_optional_ie_set_reserved_bits)
+    {
+        fprintf(stderr,
+                "[proxy] nested %s set-reserved-bits mutation enabled for later nested Registration Request packets\n",
+                cfg.nested_optional_ie_name);
+    }
+    if (cfg.mutate_nested_optional_ie_truncate_payload)
+    {
+        fprintf(stderr,
+                "[proxy] nested %s truncate-payload mutation enabled for later nested Registration Request packets\n",
+                cfg.nested_optional_ie_name);
     }
 
     int listener = create_listener(&cfg);

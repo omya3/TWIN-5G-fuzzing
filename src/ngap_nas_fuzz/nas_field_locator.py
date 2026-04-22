@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .nas_catalog import get_nas_field_definition, get_optional_iei_tag_map
+from .nas_schema import NasFieldSchema, get_nas_message_schema
 from .nas_tlv import ParsedTlv, find_tlv_by_tag, format_octets as format_tlv_octets, parse_tlv_sequence
 
 
@@ -45,6 +45,22 @@ _PLAIN_5GMM_MESSAGE_TYPES = {
 }
 
 
+def _message_field_schema(message_name: str, field_name: str) -> NasFieldSchema:
+    return get_nas_message_schema(message_name).get_field(field_name)
+
+
+def _optional_ie_field_schemas(message_name: str) -> tuple[NasFieldSchema, ...]:
+    schema = get_nas_message_schema(message_name)
+    return tuple(field for field in schema.fields if field.iei_tag)
+
+
+def _optional_iei_tag_map(message_name: str) -> dict[int, str]:
+    tag_map: dict[int, str] = {}
+    for field in _optional_ie_field_schemas(message_name):
+        tag_map[int(field.iei_tag, 16)] = field.field_name
+    return tag_map
+
+
 def _parse_raw_pdu_hex(raw_pdu_hex: str) -> list[int]:
     octets = [part.strip().lower() for part in raw_pdu_hex.split(":") if part.strip()]
     if not octets:
@@ -69,6 +85,171 @@ def _slice_hex(octets: list[int], start: int, length: int) -> str:
     return _format_octets(octets[start : start + length])
 
 
+def _format_field_value(octets: list[int], *, field_kind: str) -> str:
+    if not octets:
+        return ""
+    if len(octets) == 1 and field_kind in {"enum", "bitfield"}:
+        return f"0x{octets[0]:02x}"
+    if len(octets) == 2 and field_kind == "length":
+        return f"0x{((octets[0] << 8) | octets[1]):04x}"
+    return _format_octets(octets)
+
+
+def _read_length_from_field(octets: list[int], field: LocatedField) -> int:
+    if (
+        not field.present
+        or field.start_offset is None
+        or field.length is None
+        or field.length <= 0
+        or len(octets) < field.start_offset + field.length
+    ):
+        raise ValueError(f"Could not read a valid length from field '{field.name}'.")
+    if field.length == 1:
+        return octets[field.start_offset]
+    if field.length == 2:
+        return (octets[field.start_offset] << 8) | octets[field.start_offset + 1]
+    raise ValueError(
+        f"Length-bearing field '{field.name}' uses unsupported width {field.length}."
+    )
+
+
+def _locate_field_from_schema(
+    octets: list[int],
+    field_schema: NasFieldSchema,
+    *,
+    prior_fields: dict[str, LocatedField],
+    warnings: list[str],
+) -> LocatedField | None:
+    locator = field_schema.locator
+    if locator is None:
+        return None
+
+    if locator.strategy == "fixed-offset":
+        if locator.offset is None or locator.length is None:
+            raise ValueError(
+                f"Field '{field_schema.field_name}' is missing fixed-offset locator details."
+            )
+        if len(octets) < locator.offset + locator.length:
+            end_offset = locator.offset + locator.length - 1
+            return LocatedField(
+                name=field_schema.field_name,
+                kind=field_schema.kind,
+                present=False,
+                details=f"raw PDU ended before offsets {locator.offset}-{end_offset}",
+            )
+        value_octets = octets[locator.offset : locator.offset + locator.length]
+        return LocatedField(
+            name=field_schema.field_name,
+            kind=field_schema.kind,
+            present=True,
+            start_offset=locator.offset,
+            length=locator.length,
+            value_hex=_format_field_value(value_octets, field_kind=field_schema.kind),
+        )
+
+    if locator.strategy == "length-prefixed-payload":
+        if locator.offset is None or not locator.length_from_field:
+            raise ValueError(
+                f"Field '{field_schema.field_name}' is missing length-prefixed locator details."
+            )
+        length_field = prior_fields.get(locator.length_from_field)
+        if length_field is None:
+            return LocatedField(
+                name=field_schema.field_name,
+                kind=field_schema.kind,
+                present=False,
+                details=f"length source field '{locator.length_from_field}' was not located first",
+            )
+        try:
+            payload_length = _read_length_from_field(octets, length_field)
+        except ValueError as exc:
+            return LocatedField(
+                name=field_schema.field_name,
+                kind=field_schema.kind,
+                present=False,
+                details=str(exc),
+            )
+
+        end_offset = locator.offset + payload_length
+        if len(octets) >= end_offset:
+            return LocatedField(
+                name=field_schema.field_name,
+                kind=field_schema.kind,
+                present=True,
+                start_offset=locator.offset,
+                length=payload_length,
+                value_hex=_slice_hex(octets, locator.offset, payload_length),
+            )
+
+        warnings.append(
+            f"{field_schema.field_name} is truncated relative to its declared length"
+        )
+        available_length = max(0, len(octets) - locator.offset)
+        return LocatedField(
+            name=field_schema.field_name,
+            kind=field_schema.kind,
+            present=False,
+            start_offset=locator.offset,
+            length=available_length,
+            value_hex=_slice_hex(octets, locator.offset, available_length) if available_length else "",
+            details=(
+                f"declared {field_schema.field_name} length is 0x{payload_length:04x}, "
+                f"but packet ends at octet {len(octets) - 1}"
+            ),
+        )
+
+    if locator.strategy == "payload-remainder":
+        if locator.offset is None:
+            raise ValueError(
+                f"Field '{field_schema.field_name}' is missing payload-remainder locator details."
+            )
+        payload_length = max(0, len(octets) - locator.offset)
+        return LocatedField(
+            name=field_schema.field_name,
+            kind=field_schema.kind,
+            present=payload_length > 0,
+            start_offset=locator.offset,
+            length=payload_length,
+            value_hex=_slice_hex(octets, locator.offset, payload_length) if payload_length else "",
+            details="all remaining octets after the plain 5GS NAS header",
+        )
+
+    raise ValueError(
+        f"Unsupported locator strategy '{locator.strategy}' for field '{field_schema.field_name}'."
+    )
+
+
+def _field_end_offset_from_schema(
+    octets: list[int],
+    field_schema: NasFieldSchema,
+    located_fields: dict[str, LocatedField],
+) -> int:
+    locator = field_schema.locator
+    if locator is None:
+        raise ValueError(f"Field '{field_schema.field_name}' does not define a locator.")
+    if locator.strategy == "fixed-offset":
+        if locator.offset is None or locator.length is None:
+            raise ValueError(
+                f"Field '{field_schema.field_name}' is missing fixed-offset locator details."
+            )
+        return min(locator.offset + locator.length, len(octets))
+    if locator.strategy == "length-prefixed-payload":
+        if locator.offset is None or not locator.length_from_field:
+            raise ValueError(
+                f"Field '{field_schema.field_name}' is missing length-prefixed locator details."
+            )
+        length_field = located_fields.get(locator.length_from_field)
+        if length_field is None:
+            raise ValueError(
+                f"Length source field '{locator.length_from_field}' for '{field_schema.field_name}' is unavailable."
+            )
+        payload_length = _read_length_from_field(octets, length_field)
+        return min(locator.offset + payload_length, len(octets))
+    raise ValueError(
+        f"Unsupported locator strategy '{locator.strategy}' for field '{field_schema.field_name}'."
+    )
+
+
 def parse_raw_pdu_hex(raw_pdu_hex: str) -> list[int]:
     return _parse_raw_pdu_hex(raw_pdu_hex)
 
@@ -79,6 +260,7 @@ def format_octets(octets: list[int]) -> str:
 
 def inspect_registration_request_fields(raw_pdu_hex: str) -> RegistrationRequestFieldReport:
     octets = _parse_raw_pdu_hex(raw_pdu_hex)
+    schema = get_nas_message_schema("Registration Request")
     report = RegistrationRequestFieldReport(
         raw_pdu_hex=raw_pdu_hex,
         total_octets=len(octets),
@@ -92,118 +274,40 @@ def inspect_registration_request_fields(raw_pdu_hex: str) -> RegistrationRequest
     if octets[2] != 0x41:
         raise ValueError(f"Expected 5GMM message type 0x41, found 0x{octets[2]:02x}.")
 
-    report.fields.append(
-        LocatedField(
-            name="security_header",
-            kind="enum",
-            present=True,
-            start_offset=1,
-            length=1,
-            value_hex=f"0x{octets[1]:02x}",
+    located_fields: dict[str, LocatedField] = {}
+    for field_schema in schema.fields:
+        if field_schema.iei_tag:
+            continue
+        located = _locate_field_from_schema(
+            octets,
+            field_schema,
+            prior_fields=located_fields,
+            warnings=report.warnings,
         )
+        if located is None:
+            continue
+        report.fields.append(located)
+        located_fields[field_schema.field_name] = located
+
+    mobile_identity_schema = schema.get_field("mobile_identity_value")
+    tlv_start_offset = _field_end_offset_from_schema(
+        octets,
+        mobile_identity_schema,
+        located_fields,
     )
-    report.fields.append(
-        LocatedField(
-            name="message_type",
-            kind="enum",
-            present=True,
-            start_offset=2,
-            length=1,
-            value_hex=f"0x{octets[2]:02x}",
-        )
-    )
-
-    if len(octets) >= 4:
-        report.fields.append(
-            LocatedField(
-                name="registration_type_and_ngksi",
-                kind="bitfield",
-                present=True,
-                start_offset=3,
-                length=1,
-                value_hex=f"0x{octets[3]:02x}",
-            )
-        )
-    else:
-        report.fields.append(
-            LocatedField(
-                name="registration_type_and_ngksi",
-                kind="bitfield",
-                present=False,
-                details="raw PDU ended before offset 3",
-            )
-        )
-
-    mobile_identity_length = None
-    if len(octets) >= 6:
-        mobile_identity_length = (octets[4] << 8) | octets[5]
-        report.fields.append(
-            LocatedField(
-                name="mobile_identity_length",
-                kind="length",
-                present=True,
-                start_offset=4,
-                length=2,
-                value_hex=f"0x{mobile_identity_length:04x}",
-            )
-        )
-    else:
-        report.fields.append(
-            LocatedField(
-                name="mobile_identity_length",
-                kind="length",
-                present=False,
-                details="raw PDU ended before offsets 4-5",
-            )
-        )
-
-    mobile_identity_end = 6
-    if mobile_identity_length is not None:
-        mobile_identity_end = 6 + mobile_identity_length
-        if len(octets) >= mobile_identity_end:
-            report.fields.append(
-                LocatedField(
-                    name="mobile_identity_value",
-                    kind="identity",
-                    present=True,
-                    start_offset=6,
-                    length=mobile_identity_length,
-                    value_hex=_slice_hex(octets, 6, mobile_identity_length),
-                )
-            )
-        else:
-            report.fields.append(
-                LocatedField(
-                    name="mobile_identity_value",
-                    kind="identity",
-                    present=False,
-                    start_offset=6,
-                    length=max(0, len(octets) - 6),
-                    value_hex=_slice_hex(octets, 6, max(0, len(octets) - 6)) if len(octets) > 6 else "",
-                    details=(
-                        f"declared mobile identity length is 0x{mobile_identity_length:04x}, "
-                        f"but packet ends at octet {len(octets) - 1}"
-                    ),
-                )
-            )
-            report.warnings.append("mobile_identity_value is truncated relative to its declared length")
-
-    tlv_sequence = parse_tlv_sequence(octets, start_offset=min(mobile_identity_end, len(octets)))
+    tlv_sequence = parse_tlv_sequence(octets, start_offset=tlv_start_offset)
     report.warnings.extend(tlv_sequence.warnings)
     for tlv in tlv_sequence.tlvs:
         report.tlvs.append(_located_tlv_from_parsed("Registration Request", tlv))
 
     mapped_tlvs = {tlv.mapped_field_name: tlv for tlv in report.tlvs if tlv.mapped_field_name}
-    for field_name, field_kind in (
-        ("requested_nssai", "optional_tlv"),
-        ("fivegmm_capability", "tlv_payload"),
-    ):
-        tlv = mapped_tlvs.get(field_name)
+    for field_schema in _optional_ie_field_schemas("Registration Request"):
+        tlv = mapped_tlvs.get(field_schema.field_name)
         if tlv is None:
             report.fields.append(
                 LocatedField(
-                    name=field_name,
-                    kind=field_kind,
+                    name=field_schema.field_name,
+                    kind=field_schema.kind,
                     present=False,
                     details="not detected in trailing TLV scan",
                 )
@@ -211,8 +315,8 @@ def inspect_registration_request_fields(raw_pdu_hex: str) -> RegistrationRequest
         else:
             report.fields.append(
                 LocatedField(
-                    name=field_name,
-                    kind=field_kind,
+                    name=field_schema.field_name,
+                    kind=field_schema.kind,
                     present=True,
                     start_offset=tlv.start_offset,
                     length=2 + tlv.value_length,
@@ -236,15 +340,13 @@ def detect_plain_5gmm_message_name(raw_pdu_hex: str) -> str:
     return message_name
 
 
-def _inspect_simple_plain_message(
+def _inspect_schema_defined_plain_message(
     raw_pdu_hex: str,
     *,
     message_name: str,
-    expected_message_type: int,
-    payload_field_name: str,
-    payload_field_kind: str,
 ) -> RegistrationRequestFieldReport:
     octets = _parse_raw_pdu_hex(raw_pdu_hex)
+    schema = get_nas_message_schema(message_name)
     report = RegistrationRequestFieldReport(
         raw_pdu_hex=raw_pdu_hex,
         total_octets=len(octets),
@@ -255,45 +357,24 @@ def _inspect_simple_plain_message(
         raise ValueError(f"{message_name} raw_pdu_hex is too short.")
     if octets[0] != 0x7E:
         raise ValueError(f"Expected EPD 0x7e, found 0x{octets[0]:02x}.")
+    expected_message_type = int(schema.message_type_code, 16)
     if octets[2] != expected_message_type:
         raise ValueError(
             f"Expected 5GMM message type 0x{expected_message_type:02x}, found 0x{octets[2]:02x}."
         )
 
-    report.fields.append(
-        LocatedField(
-            name="security_header",
-            kind="enum",
-            present=True,
-            start_offset=1,
-            length=1,
-            value_hex=f"0x{octets[1]:02x}",
+    located_fields: dict[str, LocatedField] = {}
+    for field_schema in schema.fields:
+        located = _locate_field_from_schema(
+            octets,
+            field_schema,
+            prior_fields=located_fields,
+            warnings=report.warnings,
         )
-    )
-    report.fields.append(
-        LocatedField(
-            name="message_type",
-            kind="enum",
-            present=True,
-            start_offset=2,
-            length=1,
-            value_hex=f"0x{octets[2]:02x}",
-        )
-    )
-
-    payload_offset = 3
-    payload_length = max(0, len(octets) - payload_offset)
-    report.fields.append(
-        LocatedField(
-            name=payload_field_name,
-            kind=payload_field_kind,
-            present=payload_length > 0,
-            start_offset=payload_offset,
-            length=payload_length,
-            value_hex=_slice_hex(octets, payload_offset, payload_length) if payload_length else "",
-            details="all remaining octets after the plain 5GS NAS header",
-        )
-    )
+        if located is None:
+            continue
+        report.fields.append(located)
+        located_fields[field_schema.field_name] = located
     return report
 
 
@@ -306,20 +387,14 @@ def inspect_nas_message_fields(
     if resolved_message_name == "Registration Request":
         return inspect_registration_request_fields(raw_pdu_hex)
     if resolved_message_name == "Identity Response":
-        return _inspect_simple_plain_message(
+        return _inspect_schema_defined_plain_message(
             raw_pdu_hex,
             message_name=resolved_message_name,
-            expected_message_type=0x5C,
-            payload_field_name="identity_payload",
-            payload_field_kind="payload",
         )
     if resolved_message_name == "Authentication Response":
-        return _inspect_simple_plain_message(
+        return _inspect_schema_defined_plain_message(
             raw_pdu_hex,
             message_name=resolved_message_name,
-            expected_message_type=0x57,
-            payload_field_name="authentication_response_parameter",
-            payload_field_kind="payload",
         )
     raise ValueError(
         f"Field inspection is not implemented yet for NAS message '{resolved_message_name}'."
@@ -332,7 +407,7 @@ def _located_tlv_from_parsed(message_name: str, tlv: ParsedTlv) -> LocatedTlv:
         value_offset=tlv.value_offset,
         value_length=tlv.value_length,
         value_hex=format_tlv_octets(tlv.value_octets),
-        mapped_field_name=get_optional_iei_tag_map(message_name).get(tlv.tag),
+        mapped_field_name=_optional_iei_tag_map(message_name).get(tlv.tag),
     )
 
 
@@ -380,8 +455,8 @@ def locate_optional_nas_ie(
     field_name: str,
     tlv_start_offset: int,
 ) -> LocatedTlv | None:
-    field_def = get_nas_field_definition(message_name, field_name)
-    if not field_def.iei_tag:
+    field_schema = _message_field_schema(message_name, field_name)
+    if not field_schema.iei_tag:
         raise KeyError(
             f"Field '{field_name}' for NAS message '{message_name}' does not define an IEI tag."
         )
@@ -389,7 +464,7 @@ def locate_optional_nas_ie(
     tlv = find_tlv_by_tag(
         octets,
         start_offset=tlv_start_offset,
-        tag=int(field_def.iei_tag, 16),
+        tag=int(field_schema.iei_tag, 16),
     )
     if tlv is None:
         return None
@@ -401,15 +476,16 @@ def _registration_request_tlv_start_offset(
     octets: list[int] | None = None,
 ) -> int:
     parsed_octets = octets or _parse_raw_pdu_hex(raw_pdu_hex)
-    mobile_identity_length_field = locate_registration_request_field(raw_pdu_hex, "mobile_identity_length")
-    if (
-        not mobile_identity_length_field.present
-        or mobile_identity_length_field.start_offset is None
-        or mobile_identity_length_field.length != 2
-    ):
-        raise ValueError("Could not locate mobile_identity_length to derive the trailing TLV start offset.")
-    mobile_identity_length = (parsed_octets[4] << 8) | parsed_octets[5]
-    return min(6 + mobile_identity_length, len(parsed_octets))
+    schema = get_nas_message_schema("Registration Request")
+    mobile_identity_length_field = locate_registration_request_field(
+        raw_pdu_hex,
+        "mobile_identity_length",
+    )
+    return _field_end_offset_from_schema(
+        parsed_octets,
+        schema.get_field("mobile_identity_value"),
+        {"mobile_identity_length": mobile_identity_length_field},
+    )
 
 
 def locate_registration_request_optional_ie(

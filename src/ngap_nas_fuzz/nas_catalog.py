@@ -184,6 +184,7 @@ REGISTRATION_REQUEST = NasMessageProfile(
                     rationale="tests optional IE parsing and policy handling inside registration setup",
                     operators=(
                         "unsupported SST/SD combination",
+                        "duplicate NSSAI entries",
                     ),
                 ),
             ),
@@ -318,6 +319,61 @@ IDENTITY_RESPONSE = NasMessageProfile(
     procedure_phase="identity procedure",
     expected_precondition="should appear only after Identity Request from the AMF",
     baseline_signature="7e 00 5c ...",
+    field_definitions=(
+        NasFieldDefinition(
+            name="security_header",
+            kind="enum",
+            mandatory=True,
+            baseline_value="0x00",
+            location_hint="byte 1 in plain NAS header after EPD 0x7e",
+            notes="plain 5GS mobility-management NAS header for Identity Response",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="security-header mutation",
+                    strategy="enum-substitution",
+                    target="plain NAS security header field",
+                    priority="medium",
+                    rationale="tests whether the AMF safely rejects an identity response with an inconsistent plain/protected NAS header assumption",
+                    candidate_values=("0x01", "0x02", "0x03", "0x04"),
+                ),
+            ),
+        ),
+        NasFieldDefinition(
+            name="message_type",
+            kind="enum",
+            mandatory=True,
+            baseline_value="0x5c",
+            location_hint="byte 2 in baseline signature 7e 00 5c",
+            notes="identifies the message as Identity Response",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="message-type substitution",
+                    strategy="enum-substitution",
+                    target="5GMM message type octet",
+                    priority="medium",
+                    rationale="tests whether the AMF safely rejects a mismatched semantic type when an identity response body is delivered",
+                    candidate_values=("0x41", "0x57", "0x5d", "0x00"),
+                ),
+            ),
+        ),
+        NasFieldDefinition(
+            name="identity_payload",
+            kind="payload",
+            mandatory=True,
+            baseline_value="identity response payload bytes",
+            location_hint="all octets after the plain 5GS NAS header",
+            notes="opaque identity response body carried after the plain NAS header",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="identity payload corruption",
+                    strategy="payload-truncation",
+                    target="mobile identity value",
+                    priority="medium",
+                    rationale="tests whether the AMF safely handles a truncated identity-response payload once the outer message shell is valid",
+                ),
+            ),
+        ),
+    ),
     mutation_families=(
         NasMutationFamily(
             name="wrong-state delivery",
@@ -361,6 +417,61 @@ AUTHENTICATION_RESPONSE = NasMessageProfile(
     procedure_phase="authentication procedure",
     expected_precondition="should appear only after Authentication Request",
     baseline_signature="7e 00 57 ...",
+    field_definitions=(
+        NasFieldDefinition(
+            name="security_header",
+            kind="enum",
+            mandatory=True,
+            baseline_value="0x00",
+            location_hint="byte 1 in plain NAS header after EPD 0x7e",
+            notes="plain 5GS mobility-management NAS header for Authentication Response",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="security-header mutation",
+                    strategy="enum-substitution",
+                    target="plain NAS security header field",
+                    priority="medium",
+                    rationale="tests whether the AMF safely rejects an authentication response with an inconsistent plain/protected NAS header assumption",
+                    candidate_values=("0x01", "0x02", "0x03", "0x04"),
+                ),
+            ),
+        ),
+        NasFieldDefinition(
+            name="message_type",
+            kind="enum",
+            mandatory=True,
+            baseline_value="0x57",
+            location_hint="byte 2 in baseline signature 7e 00 57",
+            notes="identifies the message as Authentication Response",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="message-type substitution",
+                    strategy="enum-substitution",
+                    target="5GMM message type octet",
+                    priority="medium",
+                    rationale="tests whether the AMF safely rejects a mismatched semantic type when an authentication response body is delivered",
+                    candidate_values=("0x41", "0x5c", "0x5d", "0x00"),
+                ),
+            ),
+        ),
+        NasFieldDefinition(
+            name="authentication_response_parameter",
+            kind="payload",
+            mandatory=True,
+            baseline_value="RES*/authentication response parameter bytes",
+            location_hint="all octets after the plain 5GS NAS header",
+            notes="opaque authentication response body carried after the plain NAS header",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="authentication parameter corruption",
+                    strategy="payload-truncation",
+                    target="RES*/authentication response parameter",
+                    priority="medium",
+                    rationale="tests whether the AMF safely handles a truncated authentication response body once the outer message shell is valid",
+                ),
+            ),
+        ),
+    ),
     mutation_families=(
         NasMutationFamily(
             name="wrong-state delivery",

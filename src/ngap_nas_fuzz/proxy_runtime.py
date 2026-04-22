@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .models import ProcedureTrace
+from .nas_field_locator import detect_plain_5gmm_message_name
 from .nas_nested_inspector import (
     preview_nested_registration_request_mutation,
     scan_for_nested_registration_requests,
@@ -11,8 +12,10 @@ from .proxy_policy import (
     InitialNasMutationResult,
     InitialNasMutationSpec,
     ProxyMutationError,
+    apply_nas_mutation_plan,
     apply_initial_registration_mutation,
-    apply_registration_request_optional_ie_mutation,
+    build_plain_field_mutation_plan,
+    build_nested_registration_request_optional_ie_plan,
 )
 
 _KNOWN_5GMM_MESSAGE_TYPES = {
@@ -198,11 +201,14 @@ def simulate_nested_registration_request_optional_ie_mutation(
         )
 
     nested_before = scan.hits[hit_index - 1].raw_pdu_hex
-    nested_result = apply_registration_request_optional_ie_mutation(
-        nested_before,
+    plan = build_nested_registration_request_optional_ie_plan(
         field_name=field_name,
         action=action,
-        length_value=length_value,
+        value=length_value,
+    )
+    nested_result = apply_nas_mutation_plan(
+        nested_before,
+        plan,
     )
     final_preview = preview_nested_registration_request_mutation(
         outer_raw_pdu_hex,
@@ -212,7 +218,7 @@ def simulate_nested_registration_request_optional_ie_mutation(
 
     message.nas["raw_pdu_hex"] = final_preview.after_outer_raw_pdu_hex
     message.metadata["proxy_mutation_note"] = (
-        f"proxy simulated nested Registration Request optional IE {field_name} {action}"
+        f"proxy simulated {plan.selector.container_type} {plan.field_name} {plan.action}"
     )
     if message.nas.get("message_type"):
         message.nas["message_type"] = f"{message.nas['message_type']} [nested RR mutated]"
@@ -234,9 +240,82 @@ def simulate_nested_registration_request_optional_ie_mutation(
             "mutation": "proxy-simulated-nested-registration-request-optional-ie",
             "target_message_index": message_index,
             "nested_hit_index": hit_index,
+            "container_type": plan.selector.container_type,
+            "message_name": plan.selector.message_name,
+            "field_name": plan.field_name,
+            "action": plan.action,
+            "value": plan.value,
+        }
+    )
+    return ProxySimulationResult(trace=cloned, events=[event])
+
+
+def simulate_plain_nas_field_mutation(
+    trace: ProcedureTrace,
+    *,
+    message_index: int,
+    message_name: str,
+    field_name: str,
+    action: str,
+    value: str | None = None,
+) -> ProxySimulationResult:
+    cloned = ProcedureTrace.from_dict(trace.to_dict())
+    try:
+        message = cloned.messages[message_index - 1]
+    except IndexError as exc:
+        raise ProxyMutationError(
+            f"Message index {message_index} is outside the trace length {len(cloned.messages)}."
+        ) from exc
+
+    if message.nas is None:
+        raise ProxyMutationError(
+            f"Target message {message_index} does not carry NAS, cannot mutate plain NAS field."
+        )
+
+    raw_pdu_hex = message.nas.get("raw_pdu_hex")
+    if not isinstance(raw_pdu_hex, str) or not raw_pdu_hex:
+        raise ProxyMutationError(
+            f"Target message {message_index} does not contain raw_pdu_hex, cannot mutate plain NAS field."
+        )
+
+    try:
+        detected_message_name = detect_plain_5gmm_message_name(raw_pdu_hex)
+    except ValueError as exc:
+        raise ProxyMutationError(str(exc)) from exc
+    if detected_message_name != message_name:
+        raise ProxyMutationError(
+            f"Target message {message_index} carries '{detected_message_name}', not '{message_name}'."
+        )
+
+    plan = build_plain_field_mutation_plan(
+        message_name=message_name,
+        field_name=field_name,
+        action=action,
+        value=value,
+    )
+    mutation_result = apply_nas_mutation_plan(raw_pdu_hex, plan)
+    message.nas["raw_pdu_hex"] = mutation_result.after_raw_pdu_hex
+    message.metadata["proxy_mutation_note"] = (
+        f"proxy simulated plain {message_name} field {field_name} {action}"
+    )
+
+    event = ProxyMutationEvent(
+        message_index=message_index,
+        direction=message.direction,
+        message_type=message.message_type,
+        before_raw_pdu_hex=mutation_result.before_raw_pdu_hex,
+        after_raw_pdu_hex=mutation_result.after_raw_pdu_hex,
+        notes=list(mutation_result.notes),
+    )
+
+    cloned.mutation_history.append(
+        {
+            "mutation": "proxy-simulated-plain-nas-field",
+            "target_message_index": message_index,
+            "message_name": message_name,
             "field_name": field_name,
             "action": action,
-            "length_value": length_value,
+            "value": value,
         }
     )
     return ProxySimulationResult(trace=cloned, events=[event])

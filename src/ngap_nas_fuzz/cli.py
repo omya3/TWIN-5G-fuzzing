@@ -36,6 +36,11 @@ from .nas_campaign import (
     save_campaign_plan,
     save_simulation_campaign_plan,
 )
+from .nas_schema import (
+    build_nested_optional_ie_mutation_plan,
+    build_plain_field_mutation_plan,
+    serialize_mutation_plan_value,
+)
 from .nas_scheduler import (
     ALL_RESULT_CLASSES,
     NasCampaignObservation,
@@ -61,11 +66,14 @@ from .mutators import (
 from .proxy_policy import (
     InitialNasMutationSpec,
     ProxyMutationError,
+    apply_nas_mutation_plan,
     apply_initial_registration_mutation,
-    apply_registration_request_optional_ie_mutation,
 )
 from .proxy_runtime import ProxyExecutionConfig, simulate_initial_nas_proxy
-from .proxy_runtime import simulate_nested_registration_request_optional_ie_mutation
+from .proxy_runtime import (
+    simulate_nested_registration_request_optional_ie_mutation,
+    simulate_plain_nas_field_mutation,
+)
 from .result_classifier import classify_proxy_nas_result_logs
 
 
@@ -268,6 +276,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Required only for bad-length, for example 0xff",
     )
 
+    simulate_plain_nas_field = subparsers.add_parser(
+        "simulate-plain-nas-field-mutation",
+        help="Apply one schema-driven plain NAS field mutation to a trace and write the mutated trace",
+    )
+    simulate_plain_nas_field.add_argument("--input", required=True, type=Path)
+    simulate_plain_nas_field.add_argument("--output", required=True, type=Path)
+    simulate_plain_nas_field.add_argument(
+        "--index",
+        type=int,
+        required=True,
+        help="1-based trace message index carrying the target plain NAS message",
+    )
+    simulate_plain_nas_field.add_argument(
+        "--message-name",
+        required=True,
+        help="NAS message name, for example 'Identity Response'",
+    )
+    simulate_plain_nas_field.add_argument(
+        "--field",
+        required=True,
+        help="Schema field name, for example security_header or identity_payload",
+    )
+    simulate_plain_nas_field.add_argument(
+        "--action",
+        required=True,
+        help="Mutation action, for example replace-byte or truncate-payload",
+    )
+    simulate_plain_nas_field.add_argument(
+        "--value",
+        help="Optional mutation value, for example 0x01 for replace-byte",
+    )
+
     recommend_nas = subparsers.add_parser(
         "recommend-nas-next",
         help="Recommend the next NAS mutations based on message name and optional result history",
@@ -341,7 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan_simulation_campaign = subparsers.add_parser(
         "plan-simulated-nas-campaign",
-        help="Expand nested-simulation NAS recommendations into concrete trace-simulation commands",
+        help="Expand simulation-capable NAS recommendations into concrete trace-simulation commands",
     )
     plan_simulation_campaign.add_argument(
         "--message",
@@ -368,7 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     next_simulated_case = subparsers.add_parser(
         "next-simulated-nas-case",
-        help="Write a one-run nested-simulation plan and print the single best next simulated NAS case",
+        help="Write a one-run simulation plan and print the single best next simulated NAS case",
     )
     next_simulated_case.add_argument(
         "--message",
@@ -1208,12 +1248,15 @@ def cmd_preview_nested_registration_request_optional_ie_mutation(args: argparse.
         )
 
     nested_hit = scan.hits[args.hit - 1]
+    plan = build_nested_optional_ie_mutation_plan(
+        field_name=args.field,
+        action=args.action,
+        value=args.length_value,
+    )
     try:
-        nested_result = apply_registration_request_optional_ie_mutation(
+        nested_result = apply_nas_mutation_plan(
             nested_hit.raw_pdu_hex,
-            field_name=args.field,
-            action=args.action,
-            length_value=args.length_value,
+            plan,
         )
         preview = preview_nested_registration_request_mutation(
             outer_raw_pdu_hex,
@@ -1263,6 +1306,32 @@ def cmd_simulate_nested_registration_request_optional_ie_mutation(args: argparse
 
     save_trace(args.output, result.trace)
     print(f"Wrote nested-RR-mutated trace to {args.output}")
+    print(f"Mutated events: {len(result.events)}")
+    for event in result.events:
+        print(f"  - message {event.message_index}: {event.direction} {event.message_type}")
+        print(f"    before: {event.before_raw_pdu_hex}")
+        print(f"    after:  {event.after_raw_pdu_hex}")
+        for note in event.notes:
+            print(f"    note: {note}")
+    return 0
+
+
+def cmd_simulate_plain_nas_field_mutation(args: argparse.Namespace) -> int:
+    trace = load_trace(args.input)
+    try:
+        result = simulate_plain_nas_field_mutation(
+            trace,
+            message_index=args.index,
+            message_name=args.message_name,
+            field_name=args.field,
+            action=args.action,
+            value=args.value,
+        )
+    except ProxyMutationError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    save_trace(args.output, result.trace)
+    print(f"Wrote plain-NAS-mutated trace to {args.output}")
     print(f"Mutated events: {len(result.events)}")
     for event in result.events:
         print(f"  - message {event.message_index}: {event.direction} {event.message_type}")
@@ -1501,7 +1570,7 @@ def cmd_plan_simulated_nas_campaign(args: argparse.Namespace) -> int:
     print(f"Baseline trace: {plan.baseline_trace}")
     print(f"Runs planned: {len(plan.runs)}")
     if not plan.runs:
-        print("No supported nested-simulation NAS runs are currently available.")
+        print("No supported simulated NAS runs are currently available.")
         return 0
 
     for index, run in enumerate(plan.runs, start=1):
@@ -1510,12 +1579,14 @@ def cmd_plan_simulated_nas_campaign(args: argparse.Namespace) -> int:
         print(f"   family: {run.family_name}")
         print(f"   operator: {run.operator}")
         print(f"   score: {run.score}")
+        print(f"   container_type: {run.container_type}")
         print(f"   field: {run.field_name}")
         print(f"   action: {run.action}")
-        if run.length_value is not None:
-            print(f"   length_value: {run.length_value}")
-        print(f"   outer_message_index: {run.outer_message_index}")
-        print(f"   nested_hit_index: {run.nested_hit_index}")
+        if run.mutation_value is not None:
+            print(f"   mutation_value: {run.mutation_value}")
+        print(f"   target_message_index: {run.target_message_index}")
+        if run.nested_hit_index:
+            print(f"   nested_hit_index: {run.nested_hit_index}")
         print(f"   output_trace: {run.output_trace}")
         print(f"   rationale: {run.rationale}")
         for reason in run.recommendation_reasons:
@@ -1565,7 +1636,7 @@ def cmd_next_simulated_nas_case(args: argparse.Namespace) -> int:
     print(f"Baseline trace: {plan.baseline_trace}")
 
     if not plan.runs:
-        print("No fresh supported nested-simulation NAS run is currently available.")
+        print("No fresh supported simulated NAS run is currently available.")
         return 0
 
     run = plan.runs[0]
@@ -1574,12 +1645,14 @@ def cmd_next_simulated_nas_case(args: argparse.Namespace) -> int:
     print(f"Family: {run.family_name}")
     print(f"Operator: {run.operator}")
     print(f"Score: {run.score}")
+    print(f"Container type: {run.container_type}")
     print(f"Field: {run.field_name}")
     print(f"Action: {run.action}")
-    if run.length_value is not None:
-        print(f"Length value: {run.length_value}")
-    print(f"Outer message index: {run.outer_message_index}")
-    print(f"Nested hit index: {run.nested_hit_index}")
+    if run.mutation_value is not None:
+        print(f"Mutation value: {run.mutation_value}")
+    print(f"Target message index: {run.target_message_index}")
+    if run.nested_hit_index:
+        print(f"Nested hit index: {run.nested_hit_index}")
     print(f"Output trace: {run.output_trace}")
     print(f"Rationale: {run.rationale}")
     for reason in run.recommendation_reasons:
@@ -1601,10 +1674,27 @@ def cmd_next_simulated_nas_case(args: argparse.Namespace) -> int:
     print(f"    --message-name {shlex.quote(run.message_name)} \\")
     print(f"    --family-name {shlex.quote(run.family_name)} \\")
     print(f"    --operator {shlex.quote(run.operator)} \\")
-    print("    --proxy-mutation nested-registration-request-optional-ie \\")
-    proxy_value = f"action:{run.action}"
-    if run.length_value is not None:
-        proxy_value += f",length:{run.length_value}"
+    if run.container_type == "nested-registration-request":
+        print("    --proxy-mutation nested-registration-request-optional-ie \\")
+        proxy_value = serialize_mutation_plan_value(
+            build_nested_optional_ie_mutation_plan(
+                field_name=run.field_name,
+                action=run.action,
+                value=run.mutation_value,
+            ),
+            include_field=False,
+        )
+    else:
+        print("    --proxy-mutation plain-nas-field-simulation \\")
+        proxy_value = serialize_mutation_plan_value(
+            build_plain_field_mutation_plan(
+                message_name=run.message_name,
+                field_name=run.field_name,
+                action=run.action,
+                value=run.mutation_value,
+            ),
+            include_field=True,
+        )
     print(f"    --proxy-value {shlex.quote(proxy_value)} \\")
     print('    --notes "<replace with what changed in the simulated trace>"')
     return 0
@@ -1990,12 +2080,15 @@ def cmd_preview_registration_request_optional_ie_mutation(args: argparse.Namespa
     if not raw_pdu_hex:
         raise SystemExit("Selected NAS payload does not contain raw_pdu_hex.")
 
+    plan = build_nested_optional_ie_mutation_plan(
+        field_name=args.field,
+        action=args.action,
+        value=args.length_value,
+    )
     try:
-        result = apply_registration_request_optional_ie_mutation(
+        result = apply_nas_mutation_plan(
             raw_pdu_hex,
-            field_name=args.field,
-            action=args.action,
-            length_value=args.length_value,
+            plan,
         )
     except ProxyMutationError as exc:
         raise SystemExit(str(exc)) from exc
@@ -2098,6 +2191,8 @@ def main() -> int:
         return cmd_preview_nested_registration_request_optional_ie_mutation(args)
     if args.command == "simulate-nested-registration-request-optional-ie-mutation":
         return cmd_simulate_nested_registration_request_optional_ie_mutation(args)
+    if args.command == "simulate-plain-nas-field-mutation":
+        return cmd_simulate_plain_nas_field_mutation(args)
     if args.command == "recommend-nas-next":
         return cmd_recommend_nas_next(args)
     if args.command == "plan-proxy-nas-campaign":
