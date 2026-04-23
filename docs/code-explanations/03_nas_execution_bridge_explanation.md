@@ -561,9 +561,7 @@ Imp functions:
 4. `render_proxy_command_flag(...)`
 5. `observation_runtime_key(...)`
 
-That is enough.
-
-If a deeper question comes up, then explain:
+Other functions:
 
 6. `_live_nested_optional_ie_value(...)`
 7. `_normalize_legacy_proxy_runtime(...)`
