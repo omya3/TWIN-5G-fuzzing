@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <title>nas_catalog.py Explanation for Demo</title>
@@ -10,39 +11,51 @@
       margin: 36px;
       color: #111;
     }
-    h1, h2, h3 {
+
+    h1,
+    h2,
+    h3 {
       color: #1f3a5f;
     }
+
     h1 {
       font-size: 24px;
       margin-bottom: 8px;
     }
+
     h2 {
       font-size: 18px;
       margin-top: 22px;
       margin-bottom: 8px;
     }
+
     h3 {
       font-size: 15px;
       margin-top: 18px;
       margin-bottom: 6px;
     }
+
     p {
       margin: 8px 0;
     }
-    ul, ol {
+
+    ul,
+    ol {
       margin-top: 6px;
       margin-bottom: 10px;
     }
+
     li {
       margin: 4px 0;
     }
+
     code {
       font-family: Menlo, Consolas, monospace;
       background: #f3f4f6;
       padding: 1px 4px;
       border-radius: 4px;
     }
+
     pre {
       background: #f3f4f6;
       border: 1px solid #d9dde3;
@@ -53,6 +66,7 @@
       font-family: Menlo, Consolas, monospace;
       font-size: 12px;
     }
+
     blockquote {
       border-left: 4px solid #c9d5e6;
       margin: 10px 0;
@@ -61,13 +75,10 @@
     }
   </style>
 </head>
+
 <body>
-  <h1><code>nas_catalog.py</code> Explanation for Demo</h1>
-  <p>
-    This note is a simple explanation of the important parts of
-    <code>nas_catalog.py</code>. The goal is to help
-    explain the purpose of the file clearly during the demo.
-  </p>
+  <h1><code>nas_catalog.py</code></h1>
+
 
   <h2>Big Picture</h2>
   <p>What this file does:</p>
@@ -99,7 +110,7 @@
   <pre>Here is one family of fuzzing ideas.
 Its name is message-type substitution.
 These are the concrete operators inside it.</pre>
-  <p><b>Short explanation</b></p>
+
   <blockquote>
     <code>NasMutationFamily</code> is the research-level grouping. It organizes related
     mutations together.
@@ -121,7 +132,7 @@ These are the concrete operators inside it.</pre>
 It is mandatory.
 Its normal value is 0x41.
 It is located near byte 2 in the baseline packet.</pre>
-  <p><b>Short explanation</b></p>
+
   <blockquote>
     <code>NasFieldDefinition</code> is the field-level description. It tells us what the
     field is, where it usually appears, and how we may mutate it.
@@ -144,7 +155,6 @@ It normally goes from UE to AMF.
 It appears in the initial registration phase.
 These are its fields.
 These are its mutation families.</pre>
-  <p><b>Short explanation</b></p>
   <blockquote>
     <code>NasMessageProfile</code> is the top-level description for one NAS message type.
   </blockquote>
@@ -169,7 +179,7 @@ These are its mutation families.</pre>
   <pre>Give me the full catalog of NAS messages that this framework currently knows.</pre>
   <p><b>Why it matters</b></p>
   <p>This is the function that the rest of the system uses to load the catalog.</p>
-  <p><b>Short explanation</b></p>
+
   <blockquote>
     <code>get_nas_message_profiles()</code> is the main entry point of the NAS catalog.
     It returns all supported NAS message profiles, including Registration Request and
@@ -193,7 +203,7 @@ These are its mutation families.</pre>
   <pre>Give me only the catalog entry for Registration Request.</pre>
   <p><b>Why it matters</b></p>
   <p>If the scheduler or planner wants to work only on one message, this is the function it uses.</p>
-  <p><b>Short explanation</b></p>
+
   <blockquote>
     <code>get_nas_message_profile()</code> is used when we want details for one
     specific NAS message instead of the whole catalog.
@@ -224,7 +234,7 @@ These are its mutation families.</pre>
     <li>where it is located</li>
     <li>what mutations are meaningful</li>
   </ul>
-  <p><b>Short explanation</b></p>
+
   <blockquote>
     <code>get_nas_field_definition()</code> gives field-level metadata. For example, it
     can tell us that Requested NSSAI is an optional TLV field with IEI tag <code>0x2f</code>.
@@ -254,7 +264,7 @@ If I see IE tag 0x10, what field is that?</pre>
   <pre>0x2f ...</pre>
   <p>and know:</p>
   <pre>this is Requested NSSAI</pre>
-  <p><b>Short explanation</b></p>
+
   <blockquote>
     <code>get_optional_iei_tag_map()</code> helps the system recognize optional IE tags
     in the raw NAS bytes. For Registration Request, it maps tags like <code>0x2f</code>
@@ -263,7 +273,7 @@ If I see IE tag 0x10, what field is that?</pre>
   </blockquote>
 
   <h2>One Slightly Deeper Function</h2>
-  <p>If a deeper question comes up:</p>
+
   <blockquote>How are mutation families/operators created?</blockquote>
   <p>Then explain this one.</p>
 
@@ -302,26 +312,15 @@ rule = NasFieldGenerationRule(
   <p><b>Why it matters</b></p>
   <p>This is part of the move toward schema-driven generalization.</p>
   <p>Instead of hardcoding every operator manually, we can generate them from rules.</p>
-  <p><b>Short explanation</b></p>
+
   <blockquote>
     <code>_family_from_generation_rule()</code> is part of the schema-driven direction.
     It takes a field definition plus a generation rule and automatically produces a
     mutation family with concrete operators.
   </blockquote>
 
-  <h2>Which Parts of <code>nas_catalog.py</code> Should You Actually Explain?</h2>
-  <p>If you want the safest short explanation, explain only this:</p>
-  <ol>
-    <li><code>NasMessageProfile</code></li>
-    <li><code>NasFieldDefinition</code></li>
-    <li><code>NasMutationFamily</code></li>
-    <li><code>get_nas_message_profiles()</code></li>
-    <li><code>get_nas_field_definition()</code></li>
-    <li><code>get_optional_iei_tag_map()</code></li>
-  </ol>
-  <p>That is enough.</p>
 
-  <h2>30-Second Professor Answer</h2>
+  <h2>Conclusion</h2>
   <blockquote>
     <code>nas_catalog.py</code> is the knowledge base of the framework. It defines each
     NAS message as a <code>NasMessageProfile</code>, each field inside it as a
@@ -334,4 +333,5 @@ rule = NasFieldGenerationRule(
     such as Requested NSSAI and 5GMM capability.
   </blockquote>
 </body>
+
 </html>
