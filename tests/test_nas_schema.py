@@ -12,6 +12,11 @@ from src.ngap_nas_fuzz.nas_campaign import (
     append_observation_from_simulation_run,
     build_simulation_campaign_plan,
 )
+from src.ngap_nas_fuzz.nas_scheduler import (
+    NasCampaignObservation,
+    recommend_next_candidates,
+    summarize_campaign_history,
+)
 from src.ngap_nas_fuzz.nas_schema import (
     NasMutationPlan,
     PacketSelector,
@@ -573,6 +578,73 @@ class NasSchemaTests(unittest.TestCase):
 
         self.assertEqual(observation.proxy_mutation, "plain-nas-field-simulation")
         self.assertTrue(observation.proxy_value.startswith("field:"))
+
+    def test_campaign_summary_dedupes_same_operator_across_live_and_simulation(self) -> None:
+        history = [
+            NasCampaignObservation(
+                message_name="Authentication Response",
+                family_name="authentication parameter corruption",
+                operator="all-zero response value",
+                result_class="simulation-artifact",
+                proxy_mutation="plain-nas-field-simulation",
+                proxy_value="field:authentication_response_parameter,action:zero-payload-value",
+            ),
+            NasCampaignObservation(
+                message_name="Authentication Response",
+                family_name="authentication parameter corruption",
+                operator="all-zero response value",
+                result_class="early-semantic-reject",
+                proxy_mutation="authentication-response-zero-response-value",
+            ),
+        ]
+
+        summaries = summarize_campaign_history(history, message_name="Authentication Response")
+        summary = next(
+            item
+            for item in summaries
+            if item.family_name == "authentication parameter corruption"
+        )
+
+        self.assertEqual(summary.tried_operators, 1)
+        self.assertEqual(summary.live_tried_operators, 1)
+        self.assertEqual(summary.simulation_tried_operators, 1)
+
+    def test_recommendations_do_not_double_count_same_operator_across_modes(self) -> None:
+        history = [
+            NasCampaignObservation(
+                message_name="Authentication Response",
+                family_name="authentication parameter corruption",
+                operator="all-zero response value",
+                result_class="simulation-artifact",
+                proxy_mutation="plain-nas-field-simulation",
+                proxy_value="field:authentication_response_parameter,action:zero-payload-value",
+            ),
+            NasCampaignObservation(
+                message_name="Authentication Response",
+                family_name="authentication parameter corruption",
+                operator="all-zero response value",
+                result_class="early-semantic-reject",
+                proxy_mutation="authentication-response-zero-response-value",
+            ),
+        ]
+
+        recommendations = recommend_next_candidates(
+            "Authentication Response",
+            history,
+            limit=20,
+        )
+        oversized_length = next(
+            item
+            for item in recommendations
+            if item.candidate.family_name == "authentication parameter corruption"
+            and item.candidate.operator == "oversized length"
+        )
+
+        self.assertIn("family still underexplored", oversized_length.reasons)
+        self.assertNotIn(
+            "family already characterized by 2 observed operators",
+            oversized_length.reasons,
+        )
 
     def test_initial_registration_wrapper_matches_plain_field_plan_executor(self) -> None:
         plan = build_plain_field_mutation_plan(

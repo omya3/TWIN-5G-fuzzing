@@ -212,10 +212,7 @@ def _observation_runtime_key(
     )
 
 
-def _observation_identity_key(entry: NasCampaignObservation) -> tuple[Any, ...]:
-    runtime_key = _observation_runtime_key(entry)
-    if runtime_key is not None:
-        return runtime_key
+def _observation_operator_key(entry: NasCampaignObservation) -> tuple[str, str, str]:
     return (entry.message_name, entry.family_name, entry.operator)
 
 
@@ -278,7 +275,7 @@ def summarize_campaign_history(
         candidates = family_candidates.get(family_key, [])
         entries = family_entries.get(family_key, [])
 
-        tried_operator_keys = {_observation_identity_key(entry) for entry in entries}
+        tried_operator_keys = {_observation_operator_key(entry) for entry in entries}
         result_counts: dict[str, int] = {}
         live_result_counts: dict[str, int] = {}
         simulation_result_counts: dict[str, int] = {}
@@ -306,14 +303,14 @@ def summarize_campaign_history(
         tried_operators = len(tried_operator_keys)
         live_tried_operators = len(
             {
-                _observation_identity_key(entry)
+                _observation_operator_key(entry)
                 for entry in entries
                 if entry.result_class != RESULT_SIMULATION_ARTIFACT
             }
         )
         simulation_tried_operators = len(
             {
-                _observation_identity_key(entry)
+                _observation_operator_key(entry)
                 for entry in entries
                 if entry.result_class == RESULT_SIMULATION_ARTIFACT
             }
@@ -418,21 +415,21 @@ def recommend_next_candidates(
     for family_name in family_results:
         family_operator_counts[family_name] = len(
             {
-                _observation_identity_key(entry)
+                _observation_operator_key(entry)
                 for entry in relevant_history
                 if entry.family_name == family_name
             }
         )
         family_live_operator_counts[family_name] = len(
             {
-                _observation_identity_key(entry)
+                _observation_operator_key(entry)
                 for entry in relevant_history
                 if entry.family_name == family_name and entry.result_class != RESULT_SIMULATION_ARTIFACT
             }
         )
         family_simulation_operator_counts[family_name] = len(
             {
-                _observation_identity_key(entry)
+                _observation_operator_key(entry)
                 for entry in relevant_history
                 if entry.family_name == family_name and entry.result_class == RESULT_SIMULATION_ARTIFACT
             }
