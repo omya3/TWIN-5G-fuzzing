@@ -14,6 +14,8 @@ from .nas_schema import (
 
 LIVE_NESTED_OPTIONAL_IE_MUTATION = "nested-registration-request-optional-ie-live"
 PLAIN_FIELD_SIMULATION_MUTATION = "plain-nas-field-simulation"
+INITIAL_NAS_MESSAGE_TYPE_MUTATION = "message-type"
+INITIAL_NAS_SECURITY_HEADER_MUTATION = "security-header"
 IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION = "identity-response-message-type"
 IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION = "identity-response-security-header"
 AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION = "authentication-response-message-type"
@@ -34,27 +36,104 @@ class NasExecutionBridge:
     operator_pattern: str
 
 
-_EXECUTION_BRIDGES: tuple[NasExecutionBridge, ...] = (
-    NasExecutionBridge(
+@dataclass(frozen=True)
+class NasHeaderMutationProfile:
+    message_name: str
+    message_type_code: str
+    message_type_mutation: str
+    security_header_code: str
+    security_header_mutation: str
+    message_type_family: str = "message-type substitution"
+    security_header_family: str = "security-header mutation"
+
+
+_HEADER_MUTATION_PROFILES: tuple[NasHeaderMutationProfile, ...] = (
+    NasHeaderMutationProfile(
         message_name="Registration Request",
-        family_name="message-type substitution",
-        proxy_mutation="message-type",
-        execution_mode="proxy",
-        operator_pattern=r"replace 0x41 with (0x[0-9a-f]+)",
+        message_type_code="0x41",
+        message_type_mutation=INITIAL_NAS_MESSAGE_TYPE_MUTATION,
+        security_header_code="0x00",
+        security_header_mutation=INITIAL_NAS_SECURITY_HEADER_MUTATION,
     ),
+    NasHeaderMutationProfile(
+        message_name="Identity Response",
+        message_type_code="0x5c",
+        message_type_mutation=IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION,
+        security_header_code="0x00",
+        security_header_mutation=IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION,
+    ),
+    NasHeaderMutationProfile(
+        message_name="Authentication Response",
+        message_type_code="0x57",
+        message_type_mutation=AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION,
+        security_header_code="0x00",
+        security_header_mutation=AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION,
+    ),
+    NasHeaderMutationProfile(
+        message_name="Security Mode Complete",
+        message_type_code="0x5e",
+        message_type_mutation=SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION,
+        security_header_code="0x04",
+        security_header_mutation=SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION,
+        security_header_family="security-header inconsistency",
+    ),
+)
+
+
+def _build_header_mutation_bridges() -> tuple[NasExecutionBridge, ...]:
+    bridges: list[NasExecutionBridge] = []
+    for profile in _HEADER_MUTATION_PROFILES:
+        bridges.append(
+            NasExecutionBridge(
+                message_name=profile.message_name,
+                family_name=profile.message_type_family,
+                proxy_mutation=profile.message_type_mutation,
+                execution_mode="proxy",
+                operator_pattern=rf"replace {profile.message_type_code} with (0x[0-9a-f]+)",
+            )
+        )
+        bridges.append(
+            NasExecutionBridge(
+                message_name=profile.message_name,
+                family_name=profile.security_header_family,
+                proxy_mutation=profile.security_header_mutation,
+                execution_mode="proxy",
+                operator_pattern=rf"{profile.security_header_code} -> (0x[0-9a-f]+)",
+            )
+        )
+    return tuple(bridges)
+
+
+_MESSAGE_TYPE_OPERATOR_CODES = {
+    profile.message_type_mutation: profile.message_type_code
+    for profile in _HEADER_MUTATION_PROFILES
+}
+_SECURITY_HEADER_OPERATOR_CODES = {
+    profile.security_header_mutation: profile.security_header_code
+    for profile in _HEADER_MUTATION_PROFILES
+}
+_PROXY_MUTATION_FLAGS = {
+    INITIAL_NAS_MESSAGE_TYPE_MUTATION: "--mutate-initial-nas-msgtype",
+    IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION: "--mutate-identity-response-msgtype",
+    AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION: "--mutate-authentication-response-msgtype",
+    SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION: "--mutate-security-mode-complete-msgtype",
+    INITIAL_NAS_SECURITY_HEADER_MUTATION: "--mutate-initial-nas-security-header",
+    IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION: "--mutate-identity-response-security-header",
+    AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION: "--mutate-authentication-response-security-header",
+    SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION: "--mutate-security-mode-complete-security-header",
+    "registration-type-and-ngksi": "--mutate-registration-type-and-ngksi",
+    "mobile-identity-length": "--mutate-mobile-identity-length",
+    "mobile-identity-invalid-bcd-tail": "--mutate-mobile-identity-tail-bcd",
+}
+
+
+_EXECUTION_BRIDGES: tuple[NasExecutionBridge, ...] = _build_header_mutation_bridges() + (
     NasExecutionBridge(
         message_name="Registration Request",
         family_name="registration-type-and-ngksi mutation",
         proxy_mutation="registration-type-and-ngksi",
         execution_mode="proxy",
         operator_pattern=r"replace 0x79 with (0x[0-9a-f]+)",
-    ),
-    NasExecutionBridge(
-        message_name="Registration Request",
-        family_name="security-header mutation",
-        proxy_mutation="security-header",
-        execution_mode="proxy",
-        operator_pattern=r"0x00 -> (0x[0-9a-f]+)",
     ),
     NasExecutionBridge(
         message_name="Registration Request",
@@ -141,34 +220,6 @@ _EXECUTION_BRIDGES: tuple[NasExecutionBridge, ...] = (
         operator_pattern=r"^truncation$",
     ),
     NasExecutionBridge(
-        message_name="Identity Response",
-        family_name="message-type substitution",
-        proxy_mutation=IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION,
-        execution_mode="proxy",
-        operator_pattern=r"replace 0x5c with (0x[0-9a-f]+)",
-    ),
-    NasExecutionBridge(
-        message_name="Identity Response",
-        family_name="security-header mutation",
-        proxy_mutation=IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION,
-        execution_mode="proxy",
-        operator_pattern=r"0x00 -> (0x[0-9a-f]+)",
-    ),
-    NasExecutionBridge(
-        message_name="Authentication Response",
-        family_name="message-type substitution",
-        proxy_mutation=AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION,
-        execution_mode="proxy",
-        operator_pattern=r"replace 0x57 with (0x[0-9a-f]+)",
-    ),
-    NasExecutionBridge(
-        message_name="Authentication Response",
-        family_name="security-header mutation",
-        proxy_mutation=AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION,
-        execution_mode="proxy",
-        operator_pattern=r"0x00 -> (0x[0-9a-f]+)",
-    ),
-    NasExecutionBridge(
         message_name="Authentication Response",
         family_name="authentication parameter corruption",
         proxy_mutation=AUTHENTICATION_RESPONSE_ZERO_RESPONSE_VALUE_MUTATION,
@@ -181,20 +232,6 @@ _EXECUTION_BRIDGES: tuple[NasExecutionBridge, ...] = (
         proxy_mutation=AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION,
         execution_mode="proxy",
         operator_pattern=r"^oversized length$",
-    ),
-    NasExecutionBridge(
-        message_name="Security Mode Complete",
-        family_name="message-type substitution",
-        proxy_mutation=SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION,
-        execution_mode="proxy",
-        operator_pattern=r"replace 0x5e with (0x[0-9a-f]+)",
-    ),
-    NasExecutionBridge(
-        message_name="Security Mode Complete",
-        family_name="security-header inconsistency",
-        proxy_mutation=SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION,
-        execution_mode="proxy",
-        operator_pattern=r"0x04 -> (0x[0-9a-f]+)",
     ),
 )
 
@@ -364,24 +401,12 @@ def observation_runtime_key(
 def render_operator_for_value(base_operator: str, proxy_mutation: str, value: str | None) -> str:
     if value is None:
         return base_operator
-    if proxy_mutation == "message-type":
-        return f"replace 0x41 with {value}"
-    if proxy_mutation == IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION:
-        return f"replace 0x5c with {value}"
-    if proxy_mutation == AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION:
-        return f"replace 0x57 with {value}"
-    if proxy_mutation == SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION:
-        return f"replace 0x5e with {value}"
+    if proxy_mutation in _MESSAGE_TYPE_OPERATOR_CODES:
+        return f"replace {_MESSAGE_TYPE_OPERATOR_CODES[proxy_mutation]} with {value}"
     if proxy_mutation == "registration-type-and-ngksi":
         return f"replace 0x79 with {value}"
-    if proxy_mutation == "security-header":
-        return f"set security header 0x00 -> {value}"
-    if proxy_mutation == IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION:
-        return f"set security header 0x00 -> {value}"
-    if proxy_mutation == AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION:
-        return f"set security header 0x00 -> {value}"
-    if proxy_mutation == SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION:
-        return f"set security header 0x04 -> {value}"
+    if proxy_mutation in _SECURITY_HEADER_OPERATOR_CODES:
+        return f"set security header {_SECURITY_HEADER_OPERATOR_CODES[proxy_mutation]} -> {value}"
     if proxy_mutation == "mobile-identity-length":
         return f"set mobile identity length 0x000d -> {value}"
     if proxy_mutation == "mobile-identity-invalid-bcd-tail":
@@ -420,24 +445,6 @@ def render_proxy_command_flag(proxy_mutation: str, value: str | None) -> str:
         return f" --mutate-nested-fivegmm-capability-bad-length {value or '0xff'}"
     if value is None:
         return ""
-    if proxy_mutation == "message-type":
-        return f" --mutate-initial-nas-msgtype {value}"
-    if proxy_mutation == IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION:
-        return f" --mutate-identity-response-msgtype {value}"
-    if proxy_mutation == AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION:
-        return f" --mutate-authentication-response-msgtype {value}"
-    if proxy_mutation == "registration-type-and-ngksi":
-        return f" --mutate-registration-type-and-ngksi {value}"
-    if proxy_mutation == "mobile-identity-length":
-        return f" --mutate-mobile-identity-length {value}"
-    if proxy_mutation == "mobile-identity-invalid-bcd-tail":
-        return f" --mutate-mobile-identity-tail-bcd {value}"
-    if proxy_mutation == "mobile-identity-toggle-type-bits":
-        return " --mutate-mobile-identity-type-bits"
-    if proxy_mutation == "security-header":
-        return f" --mutate-initial-nas-security-header {value}"
-    if proxy_mutation == IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION:
-        return f" --mutate-identity-response-security-header {value}"
-    if proxy_mutation == AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION:
-        return f" --mutate-authentication-response-security-header {value}"
+    if proxy_mutation in _PROXY_MUTATION_FLAGS:
+        return f" {_PROXY_MUTATION_FLAGS[proxy_mutation]} {value}"
     return ""

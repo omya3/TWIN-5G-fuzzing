@@ -72,6 +72,21 @@ struct ProxyRuntime
     bool selected_nas_mutation_applied;
 };
 
+struct PlainNasMatch
+{
+    ssize_t start_offset;
+    ssize_t security_header_offset;
+    ssize_t message_type_offset;
+};
+
+struct ProtectedNasMatch
+{
+    ssize_t start_offset;
+    ssize_t outer_security_header_offset;
+    ssize_t inner_security_header_offset;
+    ssize_t inner_message_type_offset;
+};
+
 static void handle_signal(int sig)
 {
     (void)sig;
@@ -763,6 +778,69 @@ static bool duplicate_octet_span(
     return true;
 }
 
+static bool find_plain_nas_message(
+    const unsigned char *buffer,
+    ssize_t n,
+    uint8_t expected_security_header,
+    uint8_t expected_message_type,
+    struct PlainNasMatch *match)
+{
+    if (n < 3)
+        return false;
+
+    for (ssize_t i = 0; i <= n - 3; i++)
+    {
+        if (buffer[i] == 0x7e && buffer[i + 1] == expected_security_header &&
+            buffer[i + 2] == expected_message_type)
+        {
+            if (match)
+            {
+                match->start_offset = i;
+                match->security_header_offset = i + 1;
+                match->message_type_offset = i + 2;
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool find_protected_nas_message(
+    const unsigned char *buffer,
+    ssize_t n,
+    int expected_outer_security_header,
+    uint8_t expected_inner_security_header,
+    uint8_t expected_inner_message_type,
+    struct ProtectedNasMatch *match)
+{
+    if (n < 10)
+        return false;
+
+    for (ssize_t i = 0; i <= n - 10; i++)
+    {
+        if (buffer[i] != 0x7e)
+            continue;
+        if (expected_outer_security_header >= 0 &&
+            buffer[i + 1] != (uint8_t)expected_outer_security_header)
+            continue;
+        if (buffer[i + 7] != 0x7e || buffer[i + 8] != expected_inner_security_header ||
+            buffer[i + 9] != expected_inner_message_type)
+            continue;
+
+        if (match)
+        {
+            match->start_offset = i;
+            match->outer_security_header_offset = i + 1;
+            match->inner_security_header_offset = i + 8;
+            match->inner_message_type_offset = i + 9;
+        }
+        return true;
+    }
+
+    return false;
+}
+
 static bool maybe_patch_selected_nas(
     const struct ProxyConfig *cfg,
     struct ProxyRuntime *runtime,
@@ -803,151 +881,133 @@ static bool maybe_patch_selected_nas(
 
     if (cfg->mutate_initial_nas_msgtype)
     {
-        for (ssize_t i = 0; i <= n - 3; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x41, &match))
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x41)
-            {
-                fprintf(stderr,
-                        "[proxy] mutating initial NAS message type at offset=%zd 0x41 -> 0x%02x\n",
-                        i + 2,
-                        cfg->initial_nas_target_msgtype);
-                buffer[i + 2] = cfg->initial_nas_target_msgtype;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] mutating initial NAS message type at offset=%zd 0x41 -> 0x%02x\n",
+                    match.message_type_offset,
+                    cfg->initial_nas_target_msgtype);
+            buffer[match.message_type_offset] = cfg->initial_nas_target_msgtype;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_identity_response_msgtype)
     {
-        for (ssize_t i = 0; i <= n - 3; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x5c, &match))
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x5c)
-            {
-                fprintf(stderr,
-                        "[proxy] mutating Identity Response message type at offset=%zd 0x5c -> 0x%02x\n",
-                        i + 2,
-                        cfg->identity_response_target_msgtype);
-                buffer[i + 2] = cfg->identity_response_target_msgtype;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] mutating Identity Response message type at offset=%zd 0x5c -> 0x%02x\n",
+                    match.message_type_offset,
+                    cfg->identity_response_target_msgtype);
+            buffer[match.message_type_offset] = cfg->identity_response_target_msgtype;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_authentication_response_msgtype)
     {
-        for (ssize_t i = 0; i <= n - 3; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x57, &match))
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x57)
-            {
-                fprintf(stderr,
-                        "[proxy] mutating Authentication Response message type at offset=%zd 0x57 -> 0x%02x\n",
-                        i + 2,
-                        cfg->authentication_response_target_msgtype);
-                buffer[i + 2] = cfg->authentication_response_target_msgtype;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] mutating Authentication Response message type at offset=%zd 0x57 -> 0x%02x\n",
+                    match.message_type_offset,
+                    cfg->authentication_response_target_msgtype);
+            buffer[match.message_type_offset] = cfg->authentication_response_target_msgtype;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_security_mode_complete_msgtype)
     {
-        for (ssize_t i = 0; i <= n - 10; i++)
+        struct ProtectedNasMatch match;
+        if (find_protected_nas_message(buffer, n, -1, 0x00, 0x5e, &match))
         {
-            if (buffer[i] == 0x7e && buffer[i + 7] == 0x7e && buffer[i + 8] == 0x00 &&
-                buffer[i + 9] == 0x5e)
-            {
-                fprintf(stderr,
-                        "[proxy] mutating Security Mode Complete inner message type at offset=%zd 0x5e -> 0x%02x\n",
-                        i + 9,
-                        cfg->security_mode_complete_target_msgtype);
-                buffer[i + 9] = cfg->security_mode_complete_target_msgtype;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] mutating Security Mode Complete inner message type at offset=%zd 0x5e -> 0x%02x\n",
+                    match.inner_message_type_offset,
+                    cfg->security_mode_complete_target_msgtype);
+            buffer[match.inner_message_type_offset] = cfg->security_mode_complete_target_msgtype;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_initial_nas_security_header)
     {
-        for (ssize_t i = 0; i <= n - 3; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x41, &match))
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x41)
-            {
-                fprintf(stderr,
-                        "[proxy] mutating initial NAS security header at offset=%zd 0x00 -> 0x%02x\n",
-                        i + 1,
-                        cfg->initial_nas_target_security_header);
-                buffer[i + 1] = cfg->initial_nas_target_security_header;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] mutating initial NAS security header at offset=%zd 0x00 -> 0x%02x\n",
+                    match.security_header_offset,
+                    cfg->initial_nas_target_security_header);
+            buffer[match.security_header_offset] = cfg->initial_nas_target_security_header;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_identity_response_security_header)
     {
-        for (ssize_t i = 0; i <= n - 3; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x5c, &match))
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x5c)
-            {
-                fprintf(stderr,
-                        "[proxy] mutating Identity Response security header at offset=%zd 0x00 -> 0x%02x\n",
-                        i + 1,
-                        cfg->identity_response_target_security_header);
-                buffer[i + 1] = cfg->identity_response_target_security_header;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] mutating Identity Response security header at offset=%zd 0x00 -> 0x%02x\n",
+                    match.security_header_offset,
+                    cfg->identity_response_target_security_header);
+            buffer[match.security_header_offset] = cfg->identity_response_target_security_header;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_authentication_response_security_header)
     {
-        for (ssize_t i = 0; i <= n - 3; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x57, &match))
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x57)
-            {
-                fprintf(stderr,
-                        "[proxy] mutating Authentication Response security header at offset=%zd 0x00 -> 0x%02x\n",
-                        i + 1,
-                        cfg->authentication_response_target_security_header);
-                buffer[i + 1] = cfg->authentication_response_target_security_header;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] mutating Authentication Response security header at offset=%zd 0x00 -> 0x%02x\n",
+                    match.security_header_offset,
+                    cfg->authentication_response_target_security_header);
+            buffer[match.security_header_offset] = cfg->authentication_response_target_security_header;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_security_mode_complete_security_header)
     {
-        for (ssize_t i = 0; i <= n - 10; i++)
+        struct ProtectedNasMatch match;
+        if (find_protected_nas_message(buffer, n, 0x04, 0x00, 0x5e, &match))
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x04 && buffer[i + 7] == 0x7e &&
-                buffer[i + 8] == 0x00 && buffer[i + 9] == 0x5e)
-            {
-                fprintf(stderr,
-                        "[proxy] mutating Security Mode Complete outer security header at offset=%zd 0x04 -> 0x%02x\n",
-                        i + 1,
-                        cfg->security_mode_complete_target_security_header);
-                buffer[i + 1] = cfg->security_mode_complete_target_security_header;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] mutating Security Mode Complete outer security header at offset=%zd 0x04 -> 0x%02x\n",
+                    match.outer_security_header_offset,
+                    cfg->security_mode_complete_target_security_header);
+            buffer[match.outer_security_header_offset] = cfg->security_mode_complete_target_security_header;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_authentication_response_zero_response_value)
     {
-        for (ssize_t i = 0; i <= n - 5; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x57, &match))
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x57 &&
-                buffer[i + 3] == 0x2d)
+            if (match.start_offset + 5 <= n && buffer[match.start_offset + 3] == 0x2d)
             {
-                uint8_t value_length = buffer[i + 4];
-                ssize_t value_offset = i + 5;
+                uint8_t value_length = buffer[match.start_offset + 4];
+                ssize_t value_offset = match.start_offset + 5;
                 if (value_length == 0)
                     return false;
                 if (value_offset + value_length > n)
@@ -966,17 +1026,17 @@ static bool maybe_patch_selected_nas(
 
     if (cfg->mutate_authentication_response_parameter_length)
     {
-        for (ssize_t i = 0; i <= n - 5; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x57, &match))
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x57 &&
-                buffer[i + 3] == 0x2d)
+            if (match.start_offset + 5 <= n && buffer[match.start_offset + 3] == 0x2d)
             {
                 fprintf(stderr,
                         "[proxy] patching Authentication Response parameter length at offset=%zd 0x%02x -> 0x%02x while preserving payload bytes\n",
-                        i + 4,
-                        buffer[i + 4],
+                        match.start_offset + 4,
+                        buffer[match.start_offset + 4],
                         cfg->authentication_response_target_parameter_length);
-                buffer[i + 4] = cfg->authentication_response_target_parameter_length;
+                buffer[match.start_offset + 4] = cfg->authentication_response_target_parameter_length;
                 runtime->selected_nas_mutation_applied = true;
                 return true;
             }
@@ -985,85 +1045,80 @@ static bool maybe_patch_selected_nas(
 
     if (cfg->mutate_registration_type_and_ngksi)
     {
-        for (ssize_t i = 0; i <= n - 4; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x41, &match) &&
+            match.start_offset + 4 <= n)
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x41)
-            {
-                fprintf(stderr,
-                        "[proxy] mutating registration type / ngKSI at offset=%zd 0x%02x -> 0x%02x\n",
-                        i + 3,
-                        buffer[i + 3],
-                        cfg->registration_type_and_ngksi_target);
-                buffer[i + 3] = cfg->registration_type_and_ngksi_target;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] mutating registration type / ngKSI at offset=%zd 0x%02x -> 0x%02x\n",
+                    match.start_offset + 3,
+                    buffer[match.start_offset + 3],
+                    cfg->registration_type_and_ngksi_target);
+            buffer[match.start_offset + 3] = cfg->registration_type_and_ngksi_target;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_mobile_identity_length)
     {
-        if (n < 6)
-            return false;
-
-        for (ssize_t i = 0; i <= n - 6; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x41, &match) &&
+            match.start_offset + 6 <= n &&
+            buffer[match.start_offset + 3] == 0x79 &&
+            buffer[match.start_offset + 4] == 0x00 &&
+            buffer[match.start_offset + 5] == 0x0d)
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x41 &&
-                buffer[i + 3] == 0x79 && buffer[i + 4] == 0x00 && buffer[i + 5] == 0x0d)
-            {
-                fprintf(stderr,
-                        "[proxy] corrupting mobile identity length at offsets=%zd/%zd 0x000d -> 0x%04x\n",
-                        i + 4,
-                        i + 5,
-                        cfg->mobile_identity_length_target);
-                buffer[i + 4] = (unsigned char)((cfg->mobile_identity_length_target >> 8) & 0xff);
-                buffer[i + 5] = (unsigned char)(cfg->mobile_identity_length_target & 0xff);
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] corrupting mobile identity length at offsets=%zd/%zd 0x000d -> 0x%04x\n",
+                    match.start_offset + 4,
+                    match.start_offset + 5,
+                    cfg->mobile_identity_length_target);
+            buffer[match.start_offset + 4] =
+                (unsigned char)((cfg->mobile_identity_length_target >> 8) & 0xff);
+            buffer[match.start_offset + 5] =
+                (unsigned char)(cfg->mobile_identity_length_target & 0xff);
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_mobile_identity_tail_bcd)
     {
-        if (n < 20)
-            return false;
-
-        for (ssize_t i = 0; i <= n - 20; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x41, &match) &&
+            match.start_offset + 20 <= n &&
+            buffer[match.start_offset + 3] == 0x79 &&
+            buffer[match.start_offset + 4] == 0x00 &&
+            buffer[match.start_offset + 5] == 0x0d &&
+            buffer[match.start_offset + 19] == 0x2e)
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x41 &&
-                buffer[i + 3] == 0x79 && buffer[i + 4] == 0x00 && buffer[i + 5] == 0x0d &&
-                buffer[i + 19] == 0x2e)
-            {
-                fprintf(stderr,
-                        "[proxy] corrupting mobile identity tail octet at offset=%zd 0x2e -> 0x%02x\n",
-                        i + 19,
-                        cfg->mobile_identity_tail_bcd_target);
-                buffer[i + 19] = cfg->mobile_identity_tail_bcd_target;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] corrupting mobile identity tail octet at offset=%zd 0x2e -> 0x%02x\n",
+                    match.start_offset + 19,
+                    cfg->mobile_identity_tail_bcd_target);
+            buffer[match.start_offset + 19] = cfg->mobile_identity_tail_bcd_target;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
     if (cfg->mutate_mobile_identity_type_bits)
     {
-        if (n < 7)
-            return false;
-
-        for (ssize_t i = 0; i <= n - 7; i++)
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x41, &match) &&
+            match.start_offset + 7 <= n &&
+            buffer[match.start_offset + 3] == 0x79 &&
+            buffer[match.start_offset + 4] == 0x00 &&
+            buffer[match.start_offset + 5] == 0x0d)
         {
-            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x41 &&
-                buffer[i + 3] == 0x79 && buffer[i + 4] == 0x00 && buffer[i + 5] == 0x0d)
-            {
-                fprintf(stderr,
-                        "[proxy] toggling mobile identity type bits at offset=%zd 0x%02x -> 0x06\n",
-                        i + 6,
-                        buffer[i + 6]);
-                buffer[i + 6] = 0x06;
-                runtime->selected_nas_mutation_applied = true;
-                return true;
-            }
+            fprintf(stderr,
+                    "[proxy] toggling mobile identity type bits at offset=%zd 0x%02x -> 0x06\n",
+                    match.start_offset + 6,
+                    buffer[match.start_offset + 6]);
+            buffer[match.start_offset + 6] = 0x06;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
         }
     }
 
