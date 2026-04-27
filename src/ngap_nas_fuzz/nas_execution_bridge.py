@@ -5,6 +5,7 @@ import re
 
 from .nas_schema import (
     build_nested_optional_ie_mutation_plan,
+    build_nested_nas_selector,
     build_nested_registration_request_selector,
     deserialize_mutation_plan_value,
     resolve_plain_field_mutation_plan,
@@ -262,7 +263,11 @@ def _live_nested_optional_ie_value(
         raise ValueError(
             f"Unsupported live nested optional-IE operator '{operator}' for family '{family_name}'."
         )
-    return serialize_mutation_plan_value(plan, include_field=True)
+    return serialize_mutation_plan_value(
+        plan,
+        include_field=True,
+        include_selector=True,
+    )
 
 
 def _normalize_legacy_proxy_runtime(
@@ -276,7 +281,7 @@ def _normalize_legacy_proxy_runtime(
         )
         return (
             LIVE_NESTED_OPTIONAL_IE_MUTATION,
-            serialize_mutation_plan_value(plan, include_field=True),
+            serialize_mutation_plan_value(plan, include_field=True, include_selector=True),
         )
     if proxy_mutation == "nested-requested-nssai-bad-length":
         plan = build_nested_optional_ie_mutation_plan(
@@ -286,7 +291,7 @@ def _normalize_legacy_proxy_runtime(
         )
         return (
             LIVE_NESTED_OPTIONAL_IE_MUTATION,
-            serialize_mutation_plan_value(plan, include_field=True),
+            serialize_mutation_plan_value(plan, include_field=True, include_selector=True),
         )
     if proxy_mutation == "nested-fivegmm-capability-omit":
         plan = build_nested_optional_ie_mutation_plan(
@@ -295,7 +300,7 @@ def _normalize_legacy_proxy_runtime(
         )
         return (
             LIVE_NESTED_OPTIONAL_IE_MUTATION,
-            serialize_mutation_plan_value(plan, include_field=True),
+            serialize_mutation_plan_value(plan, include_field=True, include_selector=True),
         )
     if proxy_mutation == "nested-fivegmm-capability-bad-length":
         plan = build_nested_optional_ie_mutation_plan(
@@ -305,16 +310,16 @@ def _normalize_legacy_proxy_runtime(
         )
         return (
             LIVE_NESTED_OPTIONAL_IE_MUTATION,
-            serialize_mutation_plan_value(plan, include_field=True),
+            serialize_mutation_plan_value(plan, include_field=True, include_selector=True),
         )
     if proxy_mutation == LIVE_NESTED_OPTIONAL_IE_MUTATION:
         plan = deserialize_mutation_plan_value(
             proxy_value,
-            selector=build_nested_registration_request_selector(),
+            selector=build_nested_nas_selector(message_name="Registration Request"),
         )
         return (
             LIVE_NESTED_OPTIONAL_IE_MUTATION,
-            serialize_mutation_plan_value(plan, include_field=True),
+            serialize_mutation_plan_value(plan, include_field=True, include_selector=True),
         )
     return (proxy_mutation, proxy_value)
 
@@ -431,7 +436,7 @@ def render_proxy_command_flag(proxy_mutation: str, value: str | None) -> str:
     if proxy_mutation == LIVE_NESTED_OPTIONAL_IE_MUTATION:
         plan = deserialize_mutation_plan_value(
             value,
-            selector=build_nested_registration_request_selector(),
+            selector=build_nested_nas_selector(message_name="Registration Request"),
         )
         normalized_value = serialize_mutation_plan_value(plan, include_field=True)
         return f" --mutate-nested-optional-ie {normalized_value}"

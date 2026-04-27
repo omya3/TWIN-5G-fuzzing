@@ -167,9 +167,20 @@ def build_nested_registration_request_selector(
     message_name: str = "Registration Request",
     occurrence: str = "later",
 ) -> PacketSelector:
+    return build_nested_nas_selector(
+        message_name=message_name,
+        occurrence=occurrence,
+    )
+
+
+def build_nested_nas_selector(
+    *,
+    message_name: str,
+    occurrence: str = "later",
+) -> PacketSelector:
     return PacketSelector(
         direction="uplink",
-        container_type="nested-registration-request",
+        container_type="nested-nas-message",
         message_name=message_name,
         occurrence=occurrence,
     )
@@ -219,7 +230,7 @@ def build_nested_optional_ie_mutation_plan(
     occurrence: str = "later",
 ) -> NasMutationPlan:
     return NasMutationPlan(
-        selector=build_nested_registration_request_selector(
+        selector=build_nested_nas_selector(
             message_name=message_name,
             occurrence=occurrence,
         ),
@@ -233,8 +244,13 @@ def serialize_mutation_plan_value(
     plan: NasMutationPlan,
     *,
     include_field: bool = True,
+    include_selector: bool = False,
 ) -> str:
     parts: list[str] = []
+    if include_selector:
+        parts.append(f"container:{plan.selector.container_type}")
+        parts.append(f"message:{plan.selector.message_name}")
+        parts.append(f"occurrence:{plan.selector.occurrence}")
     if include_field:
         parts.append(f"field:{plan.field_name}")
     parts.append(f"action:{plan.action}")
@@ -250,6 +266,9 @@ def deserialize_mutation_plan_value(
     selector: PacketSelector,
     default_field_name: str | None = None,
 ) -> NasMutationPlan:
+    container_type = selector.container_type
+    message_name = selector.message_name
+    occurrence = selector.occurrence
     field_name = default_field_name or ""
     action = ""
     value = None
@@ -259,7 +278,13 @@ def deserialize_mutation_plan_value(
             if ":" not in part:
                 continue
             key, raw_part_value = part.split(":", 1)
-            if key == "field":
+            if key == "container":
+                container_type = raw_part_value
+            elif key == "message":
+                message_name = raw_part_value
+            elif key == "occurrence":
+                occurrence = raw_part_value
+            elif key == "field":
                 field_name = raw_part_value
             elif key == "action":
                 action = raw_part_value
@@ -272,7 +297,12 @@ def deserialize_mutation_plan_value(
         raise ValueError(f"Could not decode action from mutation plan value '{raw_value}'.")
 
     return NasMutationPlan(
-        selector=selector,
+        selector=PacketSelector(
+            direction=selector.direction,
+            container_type=container_type,
+            message_name=message_name,
+            occurrence=occurrence,
+        ),
         field_name=field_name,
         action=action,
         value=value,
@@ -438,7 +468,7 @@ def resolve_nested_optional_ie_plan(
                 continue
             action, value = resolved
             return NasMutationPlan(
-                selector=build_nested_registration_request_selector(
+                selector=build_nested_nas_selector(
                     message_name=message_name,
                     occurrence="later",
                 ),

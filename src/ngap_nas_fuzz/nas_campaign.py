@@ -10,10 +10,10 @@ from typing import Any
 from .nas_execution_bridge import render_operator_for_value, render_proxy_command_flag
 from .nas_field_locator import detect_plain_5gmm_message_name
 from .models import ProcedureTrace
-from .nas_nested_inspector import scan_for_nested_registration_requests
+from .nas_nested_inspector import scan_for_nested_plain_nas_messages
 from .nas_schema import (
+    build_nested_nas_selector,
     build_nested_optional_ie_mutation_plan,
-    build_nested_registration_request_selector,
     build_plain_field_mutation_plan,
     build_plain_nas_selector,
     deserialize_mutation_plan_value,
@@ -119,7 +119,7 @@ class SimulationRunSpec:
             operator=data["operator"],
             rationale=data["rationale"],
             score=int(data["score"]),
-            container_type=data.get("container_type", "nested-registration-request"),
+            container_type=data.get("container_type", "nested-nas-message"),
             field_name=data["field_name"],
             action=data["action"],
             mutation_value=data.get("mutation_value", data.get("length_value")),
@@ -180,10 +180,14 @@ def _campaign_values(raw_value: str | None) -> list[str | None]:
     return [raw_value]
 
 
-def _decode_nested_simulation_value(raw_value: str | None) -> tuple[str, str | None]:
+def _decode_nested_simulation_value(
+    raw_value: str | None,
+    *,
+    message_name: str,
+) -> tuple[str, str | None]:
     plan = deserialize_mutation_plan_value(
         raw_value,
-        selector=build_nested_registration_request_selector(),
+        selector=build_nested_nas_selector(message_name=message_name),
         default_field_name="simulation-placeholder",
     )
     return (plan.action, plan.value)
@@ -209,18 +213,28 @@ def _nested_simulation_field_name(candidate: NasSchedulerRecommendation | Any) -
     raise ValueError(f"Unsupported nested simulation family '{family_name}'.")
 
 
-def _find_nested_rr_target(trace: ProcedureTrace, field_name: str) -> tuple[int, int]:
+def _find_nested_nas_target(
+    trace: ProcedureTrace,
+    *,
+    message_name: str,
+    field_name: str,
+) -> tuple[int, int]:
     for message_index, message in enumerate(trace.messages, start=1):
         if message.nas is None:
             continue
         raw_pdu_hex = message.nas.get("raw_pdu_hex")
         if not isinstance(raw_pdu_hex, str) or not raw_pdu_hex:
             continue
-        scan = scan_for_nested_registration_requests(raw_pdu_hex)
+        scan = scan_for_nested_plain_nas_messages(
+            raw_pdu_hex,
+            message_name=message_name,
+        )
         for hit_index, hit in enumerate(scan.hits, start=1):
             if field_name in hit.optional_fields_present:
                 return (message_index, hit_index)
-    raise ValueError(f"No nested Registration Request carrying optional field '{field_name}' was found.")
+    raise ValueError(
+        f"No nested {message_name} carrying optional field '{field_name}' was found."
+    )
 
 
 def _find_plain_nas_target(trace: ProcedureTrace, message_name: str) -> int:
@@ -397,8 +411,15 @@ def build_simulation_campaign_plan(
         if candidate.execution_mode == "nested-simulation":
             field_name = _nested_simulation_field_name(rec)
             try:
-                target_message_index, nested_hit_index = _find_nested_rr_target(trace, field_name)
-                action, mutation_value = _decode_nested_simulation_value(candidate.proxy_value)
+                target_message_index, nested_hit_index = _find_nested_nas_target(
+                    trace,
+                    message_name=candidate.message_name,
+                    field_name=field_name,
+                )
+                action, mutation_value = _decode_nested_simulation_value(
+                    candidate.proxy_value,
+                    message_name=candidate.message_name,
+                )
             except ValueError:
                 continue
 
@@ -413,7 +434,9 @@ def build_simulation_campaign_plan(
             ]
             if mutation_value is not None:
                 simulate_parts.append(f"  --length-value {mutation_value}")
-            container_type = "nested-registration-request"
+            container_type = build_nested_nas_selector(
+                message_name=candidate.message_name
+            ).container_type
         elif candidate.execution_mode == "plain-simulation":
             try:
                 target_message_index = _find_plain_nas_target(trace, candidate.message_name)

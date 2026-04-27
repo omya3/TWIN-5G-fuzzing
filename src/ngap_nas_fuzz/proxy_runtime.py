@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from .models import ProcedureTrace
 from .nas_field_locator import detect_plain_5gmm_message_name
 from .nas_nested_inspector import (
+    preview_nested_plain_nas_message_mutation,
+    scan_for_nested_plain_nas_messages,
     preview_nested_registration_request_mutation,
     scan_for_nested_registration_requests,
 )
@@ -16,6 +18,7 @@ from .proxy_policy import (
     apply_initial_registration_mutation,
     build_plain_field_mutation_plan,
     build_nested_registration_request_optional_ie_plan,
+    build_nested_optional_ie_mutation_plan,
 )
 
 _KNOWN_5GMM_MESSAGE_TYPES = {
@@ -175,6 +178,27 @@ def simulate_nested_registration_request_optional_ie_mutation(
     action: str,
     length_value: str | None = None,
 ) -> ProxySimulationResult:
+    return simulate_nested_nas_optional_ie_mutation(
+        trace,
+        message_index=message_index,
+        hit_index=hit_index,
+        message_name="Registration Request",
+        field_name=field_name,
+        action=action,
+        length_value=length_value,
+    )
+
+
+def simulate_nested_nas_optional_ie_mutation(
+    trace: ProcedureTrace,
+    *,
+    message_index: int,
+    hit_index: int,
+    message_name: str,
+    field_name: str,
+    action: str,
+    length_value: str | None = None,
+) -> ProxySimulationResult:
     cloned = ProcedureTrace.from_dict(trace.to_dict())
     try:
         message = cloned.messages[message_index - 1]
@@ -191,27 +215,32 @@ def simulate_nested_registration_request_optional_ie_mutation(
     outer_raw_pdu_hex = message.nas.get("raw_pdu_hex")
     if not isinstance(outer_raw_pdu_hex, str) or not outer_raw_pdu_hex:
         raise ProxyMutationError(
-            f"Target message {message_index} does not contain raw_pdu_hex, cannot mutate nested Registration Request."
+            f"Target message {message_index} does not contain raw_pdu_hex, cannot mutate nested {message_name}."
         )
 
-    scan = scan_for_nested_registration_requests(outer_raw_pdu_hex)
+    scan = scan_for_nested_plain_nas_messages(
+        outer_raw_pdu_hex,
+        message_name=message_name,
+    )
     if hit_index < 1 or hit_index > len(scan.hits):
         raise ProxyMutationError(
             f"Nested hit index {hit_index} is outside the detected count {len(scan.hits)}."
         )
 
     nested_before = scan.hits[hit_index - 1].raw_pdu_hex
-    plan = build_nested_registration_request_optional_ie_plan(
+    plan = build_nested_optional_ie_mutation_plan(
         field_name=field_name,
         action=action,
         value=length_value,
+        message_name=message_name,
     )
     nested_result = apply_nas_mutation_plan(
         nested_before,
         plan,
     )
-    final_preview = preview_nested_registration_request_mutation(
+    final_preview = preview_nested_plain_nas_message_mutation(
         outer_raw_pdu_hex,
+        message_name=message_name,
         hit_index=hit_index,
         after_nested_raw_pdu_hex=nested_result.after_raw_pdu_hex,
     )
@@ -221,7 +250,8 @@ def simulate_nested_registration_request_optional_ie_mutation(
         f"proxy simulated {plan.selector.container_type} {plan.field_name} {plan.action}"
     )
     if message.nas.get("message_type"):
-        message.nas["message_type"] = f"{message.nas['message_type']} [nested RR mutated]"
+        suffix = "[nested RR mutated]" if message_name == "Registration Request" else "[nested NAS mutated]"
+        message.nas["message_type"] = f"{message.nas['message_type']} {suffix}"
 
     event = ProxyMutationEvent(
         message_index=message_index,
@@ -237,7 +267,7 @@ def simulate_nested_registration_request_optional_ie_mutation(
 
     cloned.mutation_history.append(
         {
-            "mutation": "proxy-simulated-nested-registration-request-optional-ie",
+            "mutation": "proxy-simulated-nested-nas-optional-ie",
             "target_message_index": message_index,
             "nested_hit_index": hit_index,
             "container_type": plan.selector.container_type,

@@ -6,6 +6,7 @@ from typing import Callable
 from .nas_field_locator import (
     format_octets,
     locate_nas_field,
+    locate_message_optional_ie,
     locate_registration_request_optional_ie,
     locate_registration_request_tlv_by_tag,
     parse_raw_pdu_hex,
@@ -419,7 +420,7 @@ def _field_schema_for_plan(plan: NasMutationPlan) -> NasFieldSchema:
     return field_schema
 
 
-def _apply_nested_registration_request_optional_ie_plan(
+def _apply_optional_ie_mutation_plan(
     octets: list[int],
     *,
     located: object,
@@ -567,22 +568,23 @@ def apply_nas_mutation_plan(
                 plan=plan,
                 result=result,
             )
-        elif plan.selector.container_type == "nested-registration-request":
-            if plan.selector.message_name != "Registration Request":
-                raise ProxyMutationError(
-                    "Nested NAS mutation execution is only implemented for "
-                    f"Registration Request, not '{plan.selector.message_name}'."
-                )
-
+        elif plan.selector.container_type in {"nested-registration-request", "nested-nas-message"}:
             _field_schema_for_plan(plan)
 
-            located = locate_registration_request_optional_ie(raw_pdu_hex, plan.field_name)
+            try:
+                located = locate_message_optional_ie(
+                    raw_pdu_hex,
+                    message_name=plan.selector.message_name,
+                    field_name=plan.field_name,
+                )
+            except ValueError as exc:
+                raise ProxyMutationError(str(exc)) from exc
             if located is None:
                 raise ProxyMutationError(
-                    f"Optional IE '{plan.field_name}' is not present in this Registration Request."
+                    f"Optional IE '{plan.field_name}' is not present in this {plan.selector.message_name}."
                 )
 
-            _apply_nested_registration_request_optional_ie_plan(
+            _apply_optional_ie_mutation_plan(
                 octets,
                 located=located,
                 field_name=plan.field_name,

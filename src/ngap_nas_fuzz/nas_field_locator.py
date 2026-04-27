@@ -539,11 +539,29 @@ def locate_registration_request_optional_ie(
     raw_pdu_hex: str,
     field_name: str,
 ) -> LocatedTlv | None:
+    return locate_message_optional_ie(
+        raw_pdu_hex,
+        message_name="Registration Request",
+        field_name=field_name,
+    )
+
+
+def locate_message_optional_ie(
+    raw_pdu_hex: str,
+    *,
+    message_name: str,
+    field_name: str,
+) -> LocatedTlv | None:
     octets = _parse_raw_pdu_hex(raw_pdu_hex)
+    if message_name != "Registration Request":
+        raise ValueError(
+            f"Optional IE location is not implemented yet for NAS message '{message_name}'."
+        )
+
     start_offset = _registration_request_tlv_start_offset(raw_pdu_hex, octets)
     return locate_optional_nas_ie(
         raw_pdu_hex,
-        message_name="Registration Request",
+        message_name=message_name,
         field_name=field_name,
         tlv_start_offset=start_offset,
     )

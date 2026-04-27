@@ -20,6 +20,7 @@ from src.ngap_nas_fuzz.nas_scheduler import (
 from src.ngap_nas_fuzz.nas_schema import (
     NasMutationPlan,
     PacketSelector,
+    build_nested_nas_selector,
     build_nested_optional_ie_mutation_plan,
     build_nested_registration_request_selector,
     build_plain_field_mutation_plan,
@@ -153,7 +154,7 @@ class NasSchemaTests(unittest.TestCase):
     def test_packet_selector_drives_mutation_plan(self) -> None:
         selector = PacketSelector(
             direction="uplink",
-            container_type="nested-registration-request",
+            container_type="nested-nas-message",
             message_name="Registration Request",
             occurrence="later",
         )
@@ -165,7 +166,7 @@ class NasSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(plan.selector.direction, "uplink")
-        self.assertEqual(plan.selector.container_type, "nested-registration-request")
+        self.assertEqual(plan.selector.container_type, "nested-nas-message")
         self.assertEqual(plan.selector.occurrence, "later")
         self.assertEqual(plan.field_name, "fivegmm_capability")
         self.assertEqual(plan.action, "bad-length")
@@ -226,7 +227,7 @@ class NasSchemaTests(unittest.TestCase):
         )
         self.assertIsNotNone(requested_nssai_plan)
         assert requested_nssai_plan is not None
-        self.assertEqual(requested_nssai_plan.selector.container_type, "nested-registration-request")
+        self.assertEqual(requested_nssai_plan.selector.container_type, "nested-nas-message")
         self.assertEqual(requested_nssai_plan.field_name, "requested_nssai")
         self.assertEqual(requested_nssai_plan.action, "duplicate-payload-entries")
         self.assertIsNone(requested_nssai_plan.value)
@@ -383,6 +384,30 @@ class NasSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(encoded, "field:fivegmm_capability,action:bad-length,length:0xff")
+        self.assertEqual(decoded, plan)
+
+    def test_mutation_plan_value_can_roundtrip_selector_context(self) -> None:
+        plan = build_nested_optional_ie_mutation_plan(
+            field_name="fivegmm_capability",
+            action="bad-length",
+            value="0xff",
+        )
+
+        encoded = serialize_mutation_plan_value(
+            plan,
+            include_field=True,
+            include_selector=True,
+        )
+        decoded = deserialize_mutation_plan_value(
+            encoded,
+            selector=build_nested_nas_selector(message_name="Registration Request"),
+        )
+
+        self.assertEqual(
+            encoded,
+            "container:nested-nas-message,message:Registration Request,occurrence:later,"
+            "field:fivegmm_capability,action:bad-length,length:0xff",
+        )
         self.assertEqual(decoded, plan)
 
     def test_mutation_plan_value_can_decode_legacy_simulation_shape(self) -> None:
