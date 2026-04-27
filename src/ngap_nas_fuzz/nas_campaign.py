@@ -242,6 +242,10 @@ def _find_plain_nas_target(trace: ProcedureTrace, message_name: str) -> int:
 def _result_hint(proxy_mutation: str) -> str:
     if proxy_mutation == "message-type":
         return "expected early semantic reject"
+    if proxy_mutation == "identity-response-message-type":
+        return "expected identity-response semantic reject"
+    if proxy_mutation == "authentication-response-message-type":
+        return "expected authentication-response semantic reject"
     if proxy_mutation == "registration-type-and-ngksi":
         return "expected registration-state semantic result"
     if proxy_mutation == "mobile-identity-length":
@@ -254,6 +258,10 @@ def _result_hint(proxy_mutation: str) -> str:
         return "expected later nested optional-IE handling result"
     if proxy_mutation == "security-header":
         return "expected security-header handling result"
+    if proxy_mutation == "identity-response-security-header":
+        return "expected identity-response security-header handling result"
+    if proxy_mutation == "authentication-response-security-header":
+        return "expected authentication-response security-header handling result"
     return "expected NAS handling result"
 
 

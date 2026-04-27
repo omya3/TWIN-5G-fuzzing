@@ -29,8 +29,12 @@ struct ProxyConfig
     int amf_port;
     int streams;
     bool mutate_initial_nas_msgtype;
+    bool mutate_identity_response_msgtype;
+    bool mutate_authentication_response_msgtype;
     bool mutate_registration_type_and_ngksi;
     bool mutate_initial_nas_security_header;
+    bool mutate_identity_response_security_header;
+    bool mutate_authentication_response_security_header;
     bool mutate_mobile_identity_length;
     bool mutate_mobile_identity_tail_bcd;
     bool mutate_mobile_identity_type_bits;
@@ -42,8 +46,12 @@ struct ProxyConfig
     bool mutate_nested_optional_ie_set_reserved_bits;
     bool mutate_nested_optional_ie_truncate_payload;
     uint8_t initial_nas_target_msgtype;
+    uint8_t identity_response_target_msgtype;
+    uint8_t authentication_response_target_msgtype;
     uint8_t registration_type_and_ngksi_target;
     uint8_t initial_nas_target_security_header;
+    uint8_t identity_response_target_security_header;
+    uint8_t authentication_response_target_security_header;
     uint8_t mobile_identity_tail_bcd_target;
     uint8_t nested_optional_ie_tag;
     uint8_t nested_optional_ie_bad_length_target;
@@ -68,8 +76,12 @@ static void usage(const char *program)
     fprintf(stderr,
             "Usage: %s [--listen-ip IP] [--listen-port PORT] [--amf-ip IP] [--amf-port PORT]\n"
             "          [--streams N] [--preview-bytes N] [--mutate-initial-nas-msgtype BYTE]\n"
+            "          [--mutate-identity-response-msgtype BYTE]\n"
+            "          [--mutate-authentication-response-msgtype BYTE]\n"
             "          [--mutate-registration-type-and-ngksi BYTE]\n"
             "          [--mutate-initial-nas-security-header BYTE]\n"
+            "          [--mutate-identity-response-security-header BYTE]\n"
+            "          [--mutate-authentication-response-security-header BYTE]\n"
             "          [--mutate-mobile-identity-length WORD]\n"
             "          [--mutate-mobile-identity-tail-bcd BYTE]\n"
             "          [--mutate-mobile-identity-type-bits]\n"
@@ -83,10 +95,18 @@ static void usage(const char *program)
             "Transport-only SCTP NGAP proxy. It forwards SCTP messages unchanged while preserving\n"
             "stream id and PPID. It can also patch the first uplink plain Registration Request\n"
             "message-type byte found inside an NGAP payload, for example 0x41 -> 0x5c, or\n"
+            "patch the first uplink plain Identity Response message-type byte found inside an\n"
+            "NGAP payload, for example 0x5c -> 0x41, or\n"
+            "patch the first uplink plain Authentication Response message-type byte found inside\n"
+            "an NGAP payload, for example 0x57 -> 0x41, or\n"
             "replace the Registration Request registration-type / ngKSI octet 0x79 -> another\n"
             "value such as 0x00, 0x71, 0x7f, or 0xf9, or\n"
             "replace the Registration Request plain security header 0x00 -> another value such\n"
             "as 0x01, 0x02, 0x03, 0x04, or 0x0f, or\n"
+            "replace the Identity Response plain security header 0x00 -> another value such\n"
+            "as 0x01, 0x02, 0x03, or 0x04, or\n"
+            "replace the Authentication Response plain security header 0x00 -> another value such\n"
+            "as 0x01, 0x02, 0x03, or 0x04, or\n"
             "corrupt the Registration Request mobile-identity length 0x000d -> another value\n"
             "such as 0x0000, 0x0001, 0x000c, or 0x00ff, or\n"
             "patch the Registration Request mobile-identity tail octet 0x2e -> another value\n"
@@ -321,8 +341,12 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         .amf_port = DEFAULT_AMF_PORT,
         .streams = DEFAULT_STREAMS,
         .mutate_initial_nas_msgtype = false,
+        .mutate_identity_response_msgtype = false,
+        .mutate_authentication_response_msgtype = false,
         .mutate_registration_type_and_ngksi = false,
         .mutate_initial_nas_security_header = false,
+        .mutate_identity_response_security_header = false,
+        .mutate_authentication_response_security_header = false,
         .mutate_mobile_identity_length = false,
         .mutate_mobile_identity_tail_bcd = false,
         .mutate_mobile_identity_type_bits = false,
@@ -334,8 +358,12 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         .mutate_nested_optional_ie_set_reserved_bits = false,
         .mutate_nested_optional_ie_truncate_payload = false,
         .initial_nas_target_msgtype = 0x5c,
+        .identity_response_target_msgtype = 0x41,
+        .authentication_response_target_msgtype = 0x41,
         .registration_type_and_ngksi_target = 0x00,
         .initial_nas_target_security_header = 0x01,
+        .identity_response_target_security_header = 0x01,
+        .authentication_response_target_security_header = 0x01,
         .mobile_identity_tail_bcd_target = 0x2a,
         .nested_optional_ie_tag = 0x00,
         .nested_optional_ie_bad_length_target = 0xff,
@@ -381,6 +409,18 @@ static struct ProxyConfig parse_args(int argc, char **argv)
             cfg.initial_nas_target_msgtype =
                 parse_byte_arg("--mutate-initial-nas-msgtype", argv[++i]);
         }
+        else if (strcmp(argv[i], "--mutate-identity-response-msgtype") == 0 && i + 1 < argc)
+        {
+            cfg.mutate_identity_response_msgtype = true;
+            cfg.identity_response_target_msgtype =
+                parse_byte_arg("--mutate-identity-response-msgtype", argv[++i]);
+        }
+        else if (strcmp(argv[i], "--mutate-authentication-response-msgtype") == 0 && i + 1 < argc)
+        {
+            cfg.mutate_authentication_response_msgtype = true;
+            cfg.authentication_response_target_msgtype =
+                parse_byte_arg("--mutate-authentication-response-msgtype", argv[++i]);
+        }
         else if (strcmp(argv[i], "--mutate-registration-type-and-ngksi") == 0 && i + 1 < argc)
         {
             cfg.mutate_registration_type_and_ngksi = true;
@@ -392,6 +432,18 @@ static struct ProxyConfig parse_args(int argc, char **argv)
             cfg.mutate_initial_nas_security_header = true;
             cfg.initial_nas_target_security_header =
                 parse_byte_arg("--mutate-initial-nas-security-header", argv[++i]);
+        }
+        else if (strcmp(argv[i], "--mutate-identity-response-security-header") == 0 && i + 1 < argc)
+        {
+            cfg.mutate_identity_response_security_header = true;
+            cfg.identity_response_target_security_header =
+                parse_byte_arg("--mutate-identity-response-security-header", argv[++i]);
+        }
+        else if (strcmp(argv[i], "--mutate-authentication-response-security-header") == 0 && i + 1 < argc)
+        {
+            cfg.mutate_authentication_response_security_header = true;
+            cfg.authentication_response_target_security_header =
+                parse_byte_arg("--mutate-authentication-response-security-header", argv[++i]);
         }
         else if (strcmp(argv[i], "--mutate-mobile-identity-length-zero") == 0)
         {
@@ -452,9 +504,17 @@ static struct ProxyConfig parse_args(int argc, char **argv)
     int mutation_modes = 0;
     if (cfg.mutate_initial_nas_msgtype)
         mutation_modes++;
+    if (cfg.mutate_identity_response_msgtype)
+        mutation_modes++;
+    if (cfg.mutate_authentication_response_msgtype)
+        mutation_modes++;
     if (cfg.mutate_registration_type_and_ngksi)
         mutation_modes++;
     if (cfg.mutate_initial_nas_security_header)
+        mutation_modes++;
+    if (cfg.mutate_identity_response_security_header)
+        mutation_modes++;
+    if (cfg.mutate_authentication_response_security_header)
         mutation_modes++;
     if (cfg.mutate_mobile_identity_length)
         mutation_modes++;
@@ -480,7 +540,7 @@ static struct ProxyConfig parse_args(int argc, char **argv)
     if (mutation_modes > 1)
     {
         fprintf(stderr,
-                "Choose only one mutation mode at a time: message-type, registration-type-and-ngksi, security-header, mobile-identity-length, mobile-identity-tail-bcd, mobile-identity-type-bits, mutate-nested-optional-ie, nested-requested-nssai-omit, nested-requested-nssai-bad-length, nested-fivegmm-capability-omit, or nested-fivegmm-capability-bad-length.\n");
+                "Choose only one mutation mode at a time: message-type, identity-response-message-type, authentication-response-message-type, registration-type-and-ngksi, security-header, identity-response-security-header, authentication-response-security-header, mobile-identity-length, mobile-identity-tail-bcd, mobile-identity-type-bits, mutate-nested-optional-ie, nested-requested-nssai-omit, nested-requested-nssai-bad-length, nested-fivegmm-capability-omit, or nested-fivegmm-capability-bad-length.\n");
         exit(2);
     }
 
@@ -657,8 +717,12 @@ static bool maybe_patch_selected_nas(
 {
     ssize_t n = *n_inout;
     if (!cfg->mutate_initial_nas_msgtype &&
+        !cfg->mutate_identity_response_msgtype &&
+        !cfg->mutate_authentication_response_msgtype &&
         !cfg->mutate_registration_type_and_ngksi &&
         !cfg->mutate_initial_nas_security_header &&
+        !cfg->mutate_identity_response_security_header &&
+        !cfg->mutate_authentication_response_security_header &&
         !cfg->mutate_mobile_identity_length &&
         !cfg->mutate_mobile_identity_tail_bcd &&
         !cfg->mutate_mobile_identity_type_bits &&
@@ -694,6 +758,40 @@ static bool maybe_patch_selected_nas(
         }
     }
 
+    if (cfg->mutate_identity_response_msgtype)
+    {
+        for (ssize_t i = 0; i <= n - 3; i++)
+        {
+            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x5c)
+            {
+                fprintf(stderr,
+                        "[proxy] mutating Identity Response message type at offset=%zd 0x5c -> 0x%02x\n",
+                        i + 2,
+                        cfg->identity_response_target_msgtype);
+                buffer[i + 2] = cfg->identity_response_target_msgtype;
+                runtime->selected_nas_mutation_applied = true;
+                return true;
+            }
+        }
+    }
+
+    if (cfg->mutate_authentication_response_msgtype)
+    {
+        for (ssize_t i = 0; i <= n - 3; i++)
+        {
+            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x57)
+            {
+                fprintf(stderr,
+                        "[proxy] mutating Authentication Response message type at offset=%zd 0x57 -> 0x%02x\n",
+                        i + 2,
+                        cfg->authentication_response_target_msgtype);
+                buffer[i + 2] = cfg->authentication_response_target_msgtype;
+                runtime->selected_nas_mutation_applied = true;
+                return true;
+            }
+        }
+    }
+
     if (cfg->mutate_initial_nas_security_header)
     {
         for (ssize_t i = 0; i <= n - 3; i++)
@@ -705,6 +803,40 @@ static bool maybe_patch_selected_nas(
                         i + 1,
                         cfg->initial_nas_target_security_header);
                 buffer[i + 1] = cfg->initial_nas_target_security_header;
+                runtime->selected_nas_mutation_applied = true;
+                return true;
+            }
+        }
+    }
+
+    if (cfg->mutate_identity_response_security_header)
+    {
+        for (ssize_t i = 0; i <= n - 3; i++)
+        {
+            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x5c)
+            {
+                fprintf(stderr,
+                        "[proxy] mutating Identity Response security header at offset=%zd 0x00 -> 0x%02x\n",
+                        i + 1,
+                        cfg->identity_response_target_security_header);
+                buffer[i + 1] = cfg->identity_response_target_security_header;
+                runtime->selected_nas_mutation_applied = true;
+                return true;
+            }
+        }
+    }
+
+    if (cfg->mutate_authentication_response_security_header)
+    {
+        for (ssize_t i = 0; i <= n - 3; i++)
+        {
+            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x57)
+            {
+                fprintf(stderr,
+                        "[proxy] mutating Authentication Response security header at offset=%zd 0x00 -> 0x%02x\n",
+                        i + 1,
+                        cfg->authentication_response_target_security_header);
+                buffer[i + 1] = cfg->authentication_response_target_security_header;
                 runtime->selected_nas_mutation_applied = true;
                 return true;
             }
@@ -1103,11 +1235,35 @@ int main(int argc, char **argv)
                 "[proxy] initial NAS message-type mutation enabled: 0x41 -> 0x%02x\n",
                 cfg.initial_nas_target_msgtype);
     }
+    if (cfg.mutate_identity_response_msgtype)
+    {
+        fprintf(stderr,
+                "[proxy] Identity Response message-type mutation enabled: 0x5c -> 0x%02x\n",
+                cfg.identity_response_target_msgtype);
+    }
+    if (cfg.mutate_authentication_response_msgtype)
+    {
+        fprintf(stderr,
+                "[proxy] Authentication Response message-type mutation enabled: 0x57 -> 0x%02x\n",
+                cfg.authentication_response_target_msgtype);
+    }
     if (cfg.mutate_initial_nas_security_header)
     {
         fprintf(stderr,
                 "[proxy] initial NAS security-header mutation enabled: 0x00 -> 0x%02x\n",
                 cfg.initial_nas_target_security_header);
+    }
+    if (cfg.mutate_identity_response_security_header)
+    {
+        fprintf(stderr,
+                "[proxy] Identity Response security-header mutation enabled: 0x00 -> 0x%02x\n",
+                cfg.identity_response_target_security_header);
+    }
+    if (cfg.mutate_authentication_response_security_header)
+    {
+        fprintf(stderr,
+                "[proxy] Authentication Response security-header mutation enabled: 0x00 -> 0x%02x\n",
+                cfg.authentication_response_target_security_header);
     }
     if (cfg.mutate_mobile_identity_length)
     {

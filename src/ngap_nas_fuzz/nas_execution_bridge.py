@@ -14,6 +14,10 @@ from .nas_schema import (
 
 LIVE_NESTED_OPTIONAL_IE_MUTATION = "nested-registration-request-optional-ie-live"
 PLAIN_FIELD_SIMULATION_MUTATION = "plain-nas-field-simulation"
+IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION = "identity-response-message-type"
+IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION = "identity-response-security-header"
+AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION = "authentication-response-message-type"
+AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION = "authentication-response-security-header"
 
 
 @dataclass(frozen=True)
@@ -130,6 +134,34 @@ _EXECUTION_BRIDGES: tuple[NasExecutionBridge, ...] = (
         proxy_mutation=LIVE_NESTED_OPTIONAL_IE_MUTATION,
         execution_mode="proxy",
         operator_pattern=r"^truncation$",
+    ),
+    NasExecutionBridge(
+        message_name="Identity Response",
+        family_name="message-type substitution",
+        proxy_mutation=IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"replace 0x5c with (0x[0-9a-f]+)",
+    ),
+    NasExecutionBridge(
+        message_name="Identity Response",
+        family_name="security-header mutation",
+        proxy_mutation=IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"0x00 -> (0x[0-9a-f]+)",
+    ),
+    NasExecutionBridge(
+        message_name="Authentication Response",
+        family_name="message-type substitution",
+        proxy_mutation=AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"replace 0x57 with (0x[0-9a-f]+)",
+    ),
+    NasExecutionBridge(
+        message_name="Authentication Response",
+        family_name="security-header mutation",
+        proxy_mutation=AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"0x00 -> (0x[0-9a-f]+)",
     ),
 )
 
@@ -295,9 +327,17 @@ def render_operator_for_value(base_operator: str, proxy_mutation: str, value: st
         return base_operator
     if proxy_mutation == "message-type":
         return f"replace 0x41 with {value}"
+    if proxy_mutation == IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION:
+        return f"replace 0x5c with {value}"
+    if proxy_mutation == AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION:
+        return f"replace 0x57 with {value}"
     if proxy_mutation == "registration-type-and-ngksi":
         return f"replace 0x79 with {value}"
     if proxy_mutation == "security-header":
+        return f"set security header 0x00 -> {value}"
+    if proxy_mutation == IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION:
+        return f"set security header 0x00 -> {value}"
+    if proxy_mutation == AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION:
         return f"set security header 0x00 -> {value}"
     if proxy_mutation == "mobile-identity-length":
         return f"set mobile identity length 0x000d -> {value}"
@@ -328,6 +368,10 @@ def render_proxy_command_flag(proxy_mutation: str, value: str | None) -> str:
         return ""
     if proxy_mutation == "message-type":
         return f" --mutate-initial-nas-msgtype {value}"
+    if proxy_mutation == IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION:
+        return f" --mutate-identity-response-msgtype {value}"
+    if proxy_mutation == AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION:
+        return f" --mutate-authentication-response-msgtype {value}"
     if proxy_mutation == "registration-type-and-ngksi":
         return f" --mutate-registration-type-and-ngksi {value}"
     if proxy_mutation == "mobile-identity-length":
@@ -338,4 +382,8 @@ def render_proxy_command_flag(proxy_mutation: str, value: str | None) -> str:
         return " --mutate-mobile-identity-type-bits"
     if proxy_mutation == "security-header":
         return f" --mutate-initial-nas-security-header {value}"
+    if proxy_mutation == IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION:
+        return f" --mutate-identity-response-security-header {value}"
+    if proxy_mutation == AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION:
+        return f" --mutate-authentication-response-security-header {value}"
     return ""
