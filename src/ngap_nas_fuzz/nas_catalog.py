@@ -530,6 +530,44 @@ SECURITY_MODE_COMPLETE = NasMessageProfile(
     procedure_phase="security mode completion",
     expected_precondition="should appear after Security Mode Command and usually under a protected NAS header",
     baseline_signature="protected-header ... 0x5e ...",
+    field_definitions=(
+        NasFieldDefinition(
+            name="protected_security_header",
+            kind="enum",
+            mandatory=True,
+            baseline_value="0x04",
+            location_hint="byte 1 in protected outer NAS header after EPD 0x7e",
+            notes="outer protected 5GS mobility-management NAS header for Security Mode Complete",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="security-header inconsistency",
+                    strategy="enum-substitution",
+                    target="outer protected NAS security header field",
+                    priority="high",
+                    rationale="targets the boundary between protected NAS routing and inner Security Mode Complete decoding",
+                    candidate_values=("0x00", "0x01", "0x02"),
+                ),
+            ),
+        ),
+        NasFieldDefinition(
+            name="message_type",
+            kind="enum",
+            mandatory=True,
+            baseline_value="0x5e",
+            location_hint="inner plain NAS byte 2 after protected header sequence 7e 04 ... 7e 00 5e",
+            notes="identifies the inner message as Security Mode Complete after the protected NAS wrapper",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="message-type substitution",
+                    strategy="enum-substitution",
+                    target="inner 5GMM message type octet",
+                    priority="high",
+                    rationale="tests whether the AMF safely rejects a mismatched protected Security Mode Complete semantic type",
+                    candidate_values=("0x41", "0x57", "0x5c", "0x00"),
+                ),
+            ),
+        ),
+    ),
     mutation_families=(
         NasMutationFamily(
             name="wrong-state delivery",
@@ -544,12 +582,16 @@ SECURITY_MODE_COMPLETE = NasMessageProfile(
         NasMutationFamily(
             name="security-header inconsistency",
             target="security header vs message semantics",
-            mutation_operators=(
-                "send with plain header when protected header is expected",
-                "send with mismatched protected header value",
-            ),
+            mutation_operators=(),
             priority="high",
             rationale="targets the boundary between NAS protection handling and inner message decoding",
+        ),
+        NasMutationFamily(
+            name="message-type substitution",
+            target="inner 5GMM message type octet",
+            mutation_operators=(),
+            priority="high",
+            rationale="tests whether the AMF safely rejects a mismatched protected Security Mode Complete semantic type",
         ),
         NasMutationFamily(
             name="IMEISV/requested IE corruption",

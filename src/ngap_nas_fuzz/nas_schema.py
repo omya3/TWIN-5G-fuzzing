@@ -335,6 +335,11 @@ def _field_locator_spec(
             return NasFieldLocatorSpec(strategy="fixed-offset", offset=2, length=1)
         if field_def.name == "authentication_response_parameter":
             return NasFieldLocatorSpec(strategy="payload-remainder", offset=3)
+    if message_name == "Security Mode Complete":
+        if field_def.name == "protected_security_header":
+            return NasFieldLocatorSpec(strategy="fixed-offset", offset=1, length=1)
+        if field_def.name == "message_type":
+            return NasFieldLocatorSpec(strategy="fixed-offset", offset=9, length=1)
     return None
 
 

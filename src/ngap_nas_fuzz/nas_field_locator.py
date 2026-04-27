@@ -42,6 +42,7 @@ _PLAIN_5GMM_MESSAGE_TYPES = {
     0x41: "Registration Request",
     0x57: "Authentication Response",
     0x5C: "Identity Response",
+    0x5E: "Security Mode Complete",
 }
 
 
@@ -378,6 +379,47 @@ def _inspect_schema_defined_plain_message(
     return report
 
 
+def _inspect_schema_defined_protected_message(
+    raw_pdu_hex: str,
+    *,
+    message_name: str,
+) -> RegistrationRequestFieldReport:
+    octets = _parse_raw_pdu_hex(raw_pdu_hex)
+    schema = get_nas_message_schema(message_name)
+    report = RegistrationRequestFieldReport(
+        raw_pdu_hex=raw_pdu_hex,
+        total_octets=len(octets),
+        message_name=message_name,
+    )
+
+    if len(octets) < 10:
+        raise ValueError(f"{message_name} raw_pdu_hex is too short for the protected wrapper.")
+    if octets[0] != 0x7E:
+        raise ValueError(f"Expected outer EPD 0x7e, found 0x{octets[0]:02x}.")
+    if octets[7] != 0x7E:
+        raise ValueError(f"Expected inner plain EPD 0x7e at offset 7, found 0x{octets[7]:02x}.")
+
+    expected_message_type = int(schema.message_type_code, 16)
+    if octets[9] != expected_message_type:
+        raise ValueError(
+            f"Expected inner 5GMM message type 0x{expected_message_type:02x}, found 0x{octets[9]:02x}."
+        )
+
+    located_fields: dict[str, LocatedField] = {}
+    for field_schema in schema.fields:
+        located = _locate_field_from_schema(
+            octets,
+            field_schema,
+            prior_fields=located_fields,
+            warnings=report.warnings,
+        )
+        if located is None:
+            continue
+        report.fields.append(located)
+        located_fields[field_schema.field_name] = located
+    return report
+
+
 def inspect_nas_message_fields(
     raw_pdu_hex: str,
     *,
@@ -393,6 +435,11 @@ def inspect_nas_message_fields(
         )
     if resolved_message_name == "Authentication Response":
         return _inspect_schema_defined_plain_message(
+            raw_pdu_hex,
+            message_name=resolved_message_name,
+        )
+    if resolved_message_name == "Security Mode Complete":
+        return _inspect_schema_defined_protected_message(
             raw_pdu_hex,
             message_name=resolved_message_name,
         )

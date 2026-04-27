@@ -21,6 +21,8 @@ AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION = "authentication-response-secu
 AUTHENTICATION_RESPONSE_ZERO_RESPONSE_VALUE_MUTATION = "authentication-response-zero-response-value"
 AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION = "authentication-response-parameter-length"
 AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_DEFAULT = "0xff"
+SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION = "security-mode-complete-message-type"
+SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION = "security-mode-complete-security-header"
 
 
 @dataclass(frozen=True)
@@ -179,6 +181,20 @@ _EXECUTION_BRIDGES: tuple[NasExecutionBridge, ...] = (
         proxy_mutation=AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION,
         execution_mode="proxy",
         operator_pattern=r"^oversized length$",
+    ),
+    NasExecutionBridge(
+        message_name="Security Mode Complete",
+        family_name="message-type substitution",
+        proxy_mutation=SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"replace 0x5e with (0x[0-9a-f]+)",
+    ),
+    NasExecutionBridge(
+        message_name="Security Mode Complete",
+        family_name="security-header inconsistency",
+        proxy_mutation=SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"0x04 -> (0x[0-9a-f]+)",
     ),
 )
 
@@ -354,6 +370,8 @@ def render_operator_for_value(base_operator: str, proxy_mutation: str, value: st
         return f"replace 0x5c with {value}"
     if proxy_mutation == AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION:
         return f"replace 0x57 with {value}"
+    if proxy_mutation == SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION:
+        return f"replace 0x5e with {value}"
     if proxy_mutation == "registration-type-and-ngksi":
         return f"replace 0x79 with {value}"
     if proxy_mutation == "security-header":
@@ -362,6 +380,8 @@ def render_operator_for_value(base_operator: str, proxy_mutation: str, value: st
         return f"set security header 0x00 -> {value}"
     if proxy_mutation == AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION:
         return f"set security header 0x00 -> {value}"
+    if proxy_mutation == SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION:
+        return f"set security header 0x04 -> {value}"
     if proxy_mutation == "mobile-identity-length":
         return f"set mobile identity length 0x000d -> {value}"
     if proxy_mutation == "mobile-identity-invalid-bcd-tail":
@@ -379,6 +399,10 @@ def render_proxy_command_flag(proxy_mutation: str, value: str | None) -> str:
             " --mutate-authentication-response-parameter-length "
             f"{value or AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_DEFAULT}"
         )
+    if proxy_mutation == SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION:
+        return f" --mutate-security-mode-complete-msgtype {value}"
+    if proxy_mutation == SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION:
+        return f" --mutate-security-mode-complete-security-header {value}"
     if proxy_mutation == LIVE_NESTED_OPTIONAL_IE_MUTATION:
         plan = deserialize_mutation_plan_value(
             value,

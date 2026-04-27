@@ -332,6 +332,38 @@ class NasSchemaTests(unittest.TestCase):
         self.assertEqual(fields["authentication_response_parameter"].length, 2)
         self.assertEqual(fields["authentication_response_parameter"].value_hex, "aa:bb")
 
+    def test_security_mode_complete_field_inspection_uses_protected_locator(self) -> None:
+        report = inspect_nas_message_fields(
+            "7e:04:e6:4b:16:71:00:7e:00:5e:77:00:09",
+            message_name="Security Mode Complete",
+        )
+        fields = {field.name: field for field in report.fields}
+
+        self.assertEqual(fields["protected_security_header"].value_hex, "0x04")
+        self.assertEqual(fields["message_type"].value_hex, "0x5e")
+        self.assertEqual(fields["message_type"].start_offset, 9)
+
+    def test_execution_bridge_promotes_security_mode_complete_header_cases_to_proxy(self) -> None:
+        msgtype_exec = resolve_operator_execution(
+            message_name="Security Mode Complete",
+            family_name="message-type substitution",
+            operator="replace 0x5e with 0x41",
+        )
+        self.assertEqual(
+            msgtype_exec,
+            (True, "proxy", "security-mode-complete-message-type", "0x41"),
+        )
+
+        sec_hdr_exec = resolve_operator_execution(
+            message_name="Security Mode Complete",
+            family_name="security-header inconsistency",
+            operator="set security header 0x04 -> 0x00",
+        )
+        self.assertEqual(
+            sec_hdr_exec,
+            (True, "proxy", "security-mode-complete-security-header", "0x00"),
+        )
+
     def test_mutation_plan_value_roundtrip_for_live_nested_optional_ie(self) -> None:
         plan = build_nested_optional_ie_mutation_plan(
             field_name="fivegmm_capability",
