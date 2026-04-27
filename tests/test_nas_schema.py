@@ -261,6 +261,28 @@ class NasSchemaTests(unittest.TestCase):
         self.assertEqual(identity_payload_plan.action, "truncate-payload")
         self.assertIsNone(identity_payload_plan.value)
 
+        auth_oversized_plan = resolve_plain_field_mutation_plan(
+            message_name="Authentication Response",
+            family_name="authentication parameter corruption",
+            operator="oversized length",
+        )
+        self.assertIsNotNone(auth_oversized_plan)
+        assert auth_oversized_plan is not None
+        self.assertEqual(auth_oversized_plan.field_name, "authentication_response_parameter")
+        self.assertEqual(auth_oversized_plan.action, "set-leading-length-byte")
+        self.assertEqual(auth_oversized_plan.value, "0xff")
+
+        auth_append_plan = resolve_plain_field_mutation_plan(
+            message_name="Authentication Response",
+            family_name="extra trailing payload",
+            operator="append extra bytes",
+        )
+        self.assertIsNotNone(auth_append_plan)
+        assert auth_append_plan is not None
+        self.assertEqual(auth_append_plan.field_name, "authentication_response_parameter")
+        self.assertEqual(auth_append_plan.action, "append-bytes")
+        self.assertEqual(auth_append_plan.value, "0x0000")
+
     def test_identity_response_field_inspection_uses_schema_locator(self) -> None:
         report = inspect_nas_message_fields("7e:00:5c:11:22:33", message_name="Identity Response")
         fields = {field.name: field for field in report.fields}
@@ -376,7 +398,46 @@ class NasSchemaTests(unittest.TestCase):
         self.assertEqual(mutated_field.value_hex, "11:22")
         self.assertIn("truncated field identity_payload", result.notes[0])
 
-    def test_execution_bridge_promotes_identity_response_plain_field_cases_to_simulation(self) -> None:
+    def test_plain_field_plan_executor_handles_authentication_response_payload_actions(self) -> None:
+        oversized = build_plain_field_mutation_plan(
+            message_name="Authentication Response",
+            field_name="authentication_response_parameter",
+            action="set-leading-length-byte",
+            value="0xff",
+        )
+        oversized_result = apply_nas_mutation_plan("7e:00:57:2d:02:aa:bb", oversized)
+        self.assertEqual(oversized_result.after_raw_pdu_hex, "7e:00:57:2d:ff:aa:bb")
+        self.assertIn("leading length 0x02 -> 0xff", oversized_result.notes[0])
+
+        zero_value = build_plain_field_mutation_plan(
+            message_name="Authentication Response",
+            field_name="authentication_response_parameter",
+            action="zero-payload-value",
+        )
+        zero_result = apply_nas_mutation_plan("7e:00:57:2d:02:aa:bb", zero_value)
+        self.assertEqual(zero_result.after_raw_pdu_hex, "7e:00:57:2d:02:00:00")
+        self.assertIn("zeroed field authentication_response_parameter value bytes", zero_result.notes[0])
+
+        append_extra = build_plain_field_mutation_plan(
+            message_name="Authentication Response",
+            field_name="authentication_response_parameter",
+            action="append-bytes",
+            value="0x0000",
+        )
+        append_result = apply_nas_mutation_plan("7e:00:57:2d:02:aa:bb", append_extra)
+        self.assertEqual(append_result.after_raw_pdu_hex, "7e:00:57:2d:02:aa:bb:00:00")
+        self.assertIn("appended 00:00 after field authentication_response_parameter", append_result.notes[0])
+
+        increment_length = build_plain_field_mutation_plan(
+            message_name="Authentication Response",
+            field_name="authentication_response_parameter",
+            action="increment-leading-length-byte",
+        )
+        increment_result = apply_nas_mutation_plan("7e:00:57:2d:02:aa:bb", increment_length)
+        self.assertEqual(increment_result.after_raw_pdu_hex, "7e:00:57:2d:03:aa:bb")
+        self.assertIn("incremented field authentication_response_parameter leading length 0x02 -> 0x03", increment_result.notes[0])
+
+    def test_execution_bridge_promotes_identity_response_header_case_to_proxy(self) -> None:
         executable_now, execution_mode, proxy_mutation, proxy_value = resolve_operator_execution(
             message_name="Identity Response",
             family_name="security-header mutation",
@@ -384,12 +445,9 @@ class NasSchemaTests(unittest.TestCase):
         )
 
         self.assertTrue(executable_now)
-        self.assertEqual(execution_mode, "plain-simulation")
-        self.assertEqual(proxy_mutation, "plain-nas-field-simulation")
-        self.assertEqual(
-            proxy_value,
-            "field:security_header,action:replace-byte,value:0x01",
-        )
+        self.assertEqual(execution_mode, "proxy")
+        self.assertEqual(proxy_mutation, "identity-response-security-header")
+        self.assertEqual(proxy_value, "0x01")
 
     def test_plain_field_runtime_can_simulate_trace_message(self) -> None:
         trace = self._identity_response_trace()

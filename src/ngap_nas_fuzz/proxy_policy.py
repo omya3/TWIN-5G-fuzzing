@@ -132,6 +132,30 @@ def _parse_byte_value(raw_value: str | None, env_name: str, max_value: int = 0xF
     return parsed
 
 
+def _parse_octet_sequence_value(raw_value: str | None, env_name: str) -> list[int]:
+    if raw_value is None or raw_value == "":
+        raise ProxyMutationError(
+            f"{env_name} requires a byte sequence value like 0x0000 or aa:bb."
+        )
+
+    normalized = raw_value.strip().lower().replace(":", "").replace(" ", "")
+    if normalized.startswith("0x"):
+        normalized = normalized[2:]
+    if not normalized:
+        raise ProxyMutationError(f"{env_name} value '{raw_value}' does not contain any bytes.")
+    if len(normalized) % 2 != 0:
+        raise ProxyMutationError(
+            f"{env_name} value '{raw_value}' must contain an even number of hex digits."
+        )
+
+    try:
+        return [int(normalized[index : index + 2], 16) for index in range(0, len(normalized), 2)]
+    except ValueError as exc:
+        raise ProxyMutationError(
+            f"{env_name} value '{raw_value}' is not a valid hex byte sequence."
+        ) from exc
+
+
 def _resolve_plain_field_mutation_value(
     rule: _PlainFieldMutationRule,
     spec: InitialNasMutationSpec,
@@ -213,9 +237,18 @@ def _parse_plain_field_plan_value(plan: NasMutationPlan) -> int:
             f"{plan.field_name} {plan.action}",
             max_value=0xFFFF,
         )
-    if plan.action == "truncate-payload":
+    if plan.action in {
+        "truncate-payload",
+        "zero-payload-value",
+        "increment-leading-length-byte",
+    }:
         raise ProxyMutationError(
             f"{plan.action} does not accept a numeric value for field '{plan.field_name}'."
+        )
+    if plan.action == "set-leading-length-byte":
+        return _parse_byte_value(
+            plan.value,
+            f"{plan.field_name} {plan.action}",
         )
     raise ProxyMutationError(f"Unsupported plain field mutation action '{plan.action}'.")
 
@@ -271,6 +304,58 @@ def _apply_plain_field_mutation_plan(
         )
         result.notes.append(
             f"truncated field {plan.field_name} by removing {format_octets(removed)} from offset {field.start_offset + field.length - 1}"
+        )
+        return
+    elif plan.action == "set-leading-length-byte":
+        if field.length is None or field.length < 2:
+            raise ProxyMutationError(
+                f"{plan.field_name} is not present with a leading length byte in the {plan.selector.message_name}."
+            )
+        new_value = _parse_plain_field_plan_value(plan)
+        target_offset = field.start_offset + 1
+        old_value = patch_byte(octets, target_offset, new_value)
+        result.notes.append(
+            f"patched field {plan.field_name} leading length 0x{old_value:02x} -> 0x{new_value:02x}"
+        )
+        return
+    elif plan.action == "zero-payload-value":
+        if field.length is None or field.length < 3:
+            raise ProxyMutationError(
+                f"{plan.field_name} is not present with enough bytes to zero its value in the {plan.selector.message_name}."
+            )
+        value_start = field.start_offset + 2
+        value_length = field.length - 2
+        old_span = replace_span(octets, value_start, [0x00] * value_length)
+        result.notes.append(
+            f"zeroed field {plan.field_name} value bytes {format_octets(old_span)} at offset {value_start}"
+        )
+        return
+    elif plan.action == "append-bytes":
+        extra_octets = _parse_octet_sequence_value(
+            plan.value,
+            f"{plan.field_name} {plan.action}",
+        )
+        insert_offset = field.start_offset + (field.length or 0)
+        octets[insert_offset:insert_offset] = extra_octets
+        result.notes.append(
+            f"appended {format_octets(extra_octets)} after field {plan.field_name} at offset {insert_offset}"
+        )
+        return
+    elif plan.action == "increment-leading-length-byte":
+        if field.length is None or field.length < 2:
+            raise ProxyMutationError(
+                f"{plan.field_name} is not present with a leading length byte in the {plan.selector.message_name}."
+            )
+        target_offset = field.start_offset + 1
+        old_value = octets[target_offset]
+        if old_value >= 0xFF:
+            raise ProxyMutationError(
+                f"{plan.field_name} leading length is already 0xff and cannot be incremented further."
+            )
+        new_value = old_value + 1
+        patch_byte(octets, target_offset, new_value)
+        result.notes.append(
+            f"incremented field {plan.field_name} leading length 0x{old_value:02x} -> 0x{new_value:02x}"
         )
         return
     else:

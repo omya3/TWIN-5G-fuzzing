@@ -464,10 +464,26 @@ AUTHENTICATION_RESPONSE = NasMessageProfile(
             generation_rules=(
                 NasFieldGenerationRule(
                     family_name="authentication parameter corruption",
-                    strategy="payload-truncation",
+                    strategy="named-operators",
                     target="RES*/authentication response parameter",
                     priority="medium",
                     rationale="tests whether the AMF safely handles a truncated authentication response body once the outer message shell is valid",
+                    operators=(
+                        "truncate response parameter",
+                        "oversized length",
+                        "all-zero response value",
+                    ),
+                ),
+                NasFieldGenerationRule(
+                    family_name="extra trailing payload",
+                    strategy="named-operators",
+                    target="message body length",
+                    priority="medium",
+                    rationale="checks whether the AMF tolerates or safely rejects authentication responses with inconsistent body layout",
+                    operators=(
+                        "append extra bytes",
+                        "leave inconsistent length metadata",
+                    ),
                 ),
             ),
         ),

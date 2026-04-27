@@ -32,6 +32,16 @@ def _named_operator_action_kinds(operators: tuple[str, ...]) -> tuple[str, ...]:
             action_kinds.append("set-reserved-bits")
         elif normalized == "truncation":
             action_kinds.append("truncate-payload")
+        elif normalized == "truncate response parameter":
+            action_kinds.append("truncate-payload")
+        elif normalized == "oversized length":
+            action_kinds.append("set-leading-length-byte")
+        elif normalized == "all-zero response value":
+            action_kinds.append("zero-payload-value")
+        elif normalized == "append extra bytes":
+            action_kinds.append("append-bytes")
+        elif normalized == "leave inconsistent length metadata":
+            action_kinds.append("increment-leading-length-byte")
         else:
             action_kinds.append("named-operator")
     return tuple(action_kinds)
@@ -472,6 +482,17 @@ def _plain_field_action_from_rule(
         normalized_operator = operator.lower()
         if normalized_operator == "toggle identity type bits inconsistently":
             return ("replace-first-byte", "0x06")
+        if field.field_name == "authentication_response_parameter":
+            if normalized_operator == "truncate response parameter":
+                return ("truncate-payload", None)
+            if normalized_operator == "oversized length":
+                return ("set-leading-length-byte", "0xff")
+            if normalized_operator == "all-zero response value":
+                return ("zero-payload-value", None)
+            if normalized_operator == "append extra bytes":
+                return ("append-bytes", "0x0000")
+            if normalized_operator == "leave inconsistent length metadata":
+                return ("increment-leading-length-byte", None)
 
     return None
 
