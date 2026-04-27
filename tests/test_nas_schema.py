@@ -33,9 +33,11 @@ from src.ngap_nas_fuzz.nas_schema import (
 )
 from src.ngap_nas_fuzz.models import Message, ProcedureTrace
 from src.ngap_nas_fuzz.nas_execution_bridge import resolve_operator_execution
+from src.ngap_nas_fuzz.nas_execution_bridge import render_proxy_command_flag
 from src.ngap_nas_fuzz.nas_field_locator import inspect_registration_request_fields
 from src.ngap_nas_fuzz.nas_field_locator import inspect_nas_message_fields
 from src.ngap_nas_fuzz.nas_field_locator import locate_nas_field
+from src.ngap_nas_fuzz.nas_field_locator import locate_message_optional_ie
 from src.ngap_nas_fuzz.proxy_policy import (
     InitialNasMutationSpec,
     ProxyMutationError,
@@ -54,6 +56,11 @@ class NasSchemaTests(unittest.TestCase):
     _REGISTRATION_REQUEST_WITH_OPTIONAL_IES = (
         "7e:00:41:79:00:0d:01:00:f1:10:00:00:00:00:00:00:00:00:10:"
         "2e:04:f0:f0:f0:f0:10:01:00:2f:02:01:01"
+    )
+    _SECURITY_MODE_COMPLETE_WITH_NESTED_RR = (
+        "7e:04:e6:4b:16:71:00:7e:00:5e:77:00:09:45:73:80:61:21:85:61:51:f1:"
+        "71:00:23:7e:00:41:79:00:0d:01:00:f1:10:00:00:00:00:00:00:00:00:10:"
+        "10:01:00:2e:04:f0:f0:f0:f0:2f:02:01:01:53:01:00"
     )
 
     def _identity_response_trace(self) -> ProcedureTrace:
@@ -370,6 +377,42 @@ class NasSchemaTests(unittest.TestCase):
             (True, "proxy", "security-mode-complete-security-header", "0x00"),
         )
 
+    def test_schema_can_resolve_security_mode_complete_requested_ie_plan(self) -> None:
+        plan = resolve_nested_optional_ie_plan(
+            message_name="Security Mode Complete",
+            family_name="IMEISV/requested IE corruption",
+            operator="invalid optional IE length",
+        )
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.selector.container_type, "nested-nas-message")
+        self.assertEqual(plan.selector.message_name, "Security Mode Complete")
+        self.assertEqual(plan.field_name, "requested_nssai")
+        self.assertEqual(plan.action, "bad-length")
+        self.assertEqual(plan.value, "0xff")
+
+    def test_execution_bridge_promotes_security_mode_complete_requested_ie_case_to_proxy(self) -> None:
+        executable_now, execution_mode, proxy_mutation, proxy_value = resolve_operator_execution(
+            message_name="Security Mode Complete",
+            family_name="IMEISV/requested IE corruption",
+            operator="invalid optional IE length",
+        )
+
+        self.assertTrue(executable_now)
+        self.assertEqual(execution_mode, "proxy")
+        self.assertEqual(proxy_mutation, "nested-registration-request-optional-ie-live")
+        self.assertEqual(
+            proxy_value,
+            "container:nested-nas-message,message:Security Mode Complete,occurrence:later,"
+            "field:requested_nssai,action:bad-length,length:0xff",
+        )
+        self.assertEqual(
+            render_proxy_command_flag(proxy_mutation, proxy_value),
+            " --mutate-nested-optional-ie "
+            "container:nested-nas-message,message:Security Mode Complete,occurrence:later,"
+            "field:requested_nssai,action:bad-length,length:0xff",
+        )
+
     def test_mutation_plan_value_roundtrip_for_live_nested_optional_ie(self) -> None:
         plan = build_nested_optional_ie_mutation_plan(
             field_name="fivegmm_capability",
@@ -438,6 +481,34 @@ class NasSchemaTests(unittest.TestCase):
 
         self.assertEqual(direct.after_raw_pdu_hex, wrapped.after_raw_pdu_hex)
         self.assertEqual(direct.notes, wrapped.notes)
+
+    def test_field_locator_can_find_requested_nssai_inside_security_mode_complete_nested_rr(self) -> None:
+        located = locate_message_optional_ie(
+            self._SECURITY_MODE_COMPLETE_WITH_NESTED_RR,
+            message_name="Security Mode Complete",
+            field_name="requested_nssai",
+        )
+
+        self.assertIsNotNone(located)
+        assert located is not None
+        self.assertEqual(located.tag, "0x2f")
+        self.assertEqual(located.value_hex, "01:01")
+        self.assertEqual(located.start_offset, 53)
+
+    def test_plan_executor_can_mutate_requested_nssai_inside_security_mode_complete_nested_rr(self) -> None:
+        plan = resolve_nested_optional_ie_plan(
+            message_name="Security Mode Complete",
+            family_name="IMEISV/requested IE corruption",
+            operator="invalid optional IE length",
+        )
+        assert plan is not None
+
+        result = apply_nas_mutation_plan(self._SECURITY_MODE_COMPLETE_WITH_NESTED_RR, plan)
+
+        self.assertIn("2f:ff:01:01", result.after_raw_pdu_hex)
+        self.assertTrue(
+            any("requested_nssai" in note and "length" in note for note in result.notes)
+        )
 
     def test_plan_executor_rejects_action_not_modeled_for_field(self) -> None:
         plan = build_nested_registration_request_optional_ie_plan(

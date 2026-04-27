@@ -63,6 +63,7 @@ struct ProxyConfig
     uint8_t nested_optional_ie_tag;
     uint8_t nested_optional_ie_bad_length_target;
     const char *nested_optional_ie_name;
+    bool nested_optional_ie_require_security_mode_complete;
     uint16_t mobile_identity_length_target;
     int preview_bytes;
 };
@@ -152,6 +153,7 @@ static void usage(const char *program)
             "For the generic nested optional-IE flag, SPEC can look like:\n"
             "  field:requested_nssai,action:omit\n"
             "  field:requested_nssai,action:bad-length,length:0xff\n"
+            "  field:requested_nssai,action:bad-length,length:0xff,message:Security Mode Complete\n"
             "  field:requested_nssai,action:duplicate\n"
             "  field:requested_nssai,action:unsupported-sst-sd\n"
             "  field:requested_nssai,action:duplicate-payload-entries\n"
@@ -272,9 +274,11 @@ static void parse_nested_optional_ie_spec(struct ProxyConfig *cfg, const char *s
     char field_name[64];
     char action[64];
     char length_value[64];
+    char message_name[64];
     bool has_field = read_spec_token(spec, "field", field_name, sizeof(field_name));
     bool has_action = read_spec_token(spec, "action", action, sizeof(action));
     bool has_length = read_spec_token(spec, "length", length_value, sizeof(length_value));
+    bool has_message = read_spec_token(spec, "message", message_name, sizeof(message_name));
 
     if (!has_field || !has_action)
     {
@@ -285,6 +289,26 @@ static void parse_nested_optional_ie_spec(struct ProxyConfig *cfg, const char *s
     }
 
     configure_nested_optional_ie_field(cfg, field_name);
+
+    if (has_message)
+    {
+        if (strcmp(message_name, "Security Mode Complete") == 0)
+        {
+            cfg->nested_optional_ie_require_security_mode_complete = true;
+        }
+        else if (strcmp(message_name, "Registration Request") == 0)
+        {
+            cfg->nested_optional_ie_require_security_mode_complete = false;
+        }
+        else
+        {
+            fprintf(stderr,
+                    "Unsupported nested optional IE message '%s' in spec '%s'\n",
+                    message_name,
+                    spec);
+            exit(2);
+        }
+    }
 
     if (strcmp(action, "omit") == 0)
     {
@@ -409,6 +433,7 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         .nested_optional_ie_tag = 0x00,
         .nested_optional_ie_bad_length_target = 0xff,
         .nested_optional_ie_name = "nested optional IE",
+        .nested_optional_ie_require_security_mode_complete = false,
         .mobile_identity_length_target = 0x000d,
         .preview_bytes = 12,
     };
@@ -1133,7 +1158,16 @@ static bool maybe_patch_selected_nas(
         if (n < 8)
             return false;
 
-        for (ssize_t start = 1; start <= n - 6; start++)
+        ssize_t search_start = 1;
+        if (cfg->nested_optional_ie_require_security_mode_complete)
+        {
+            struct ProtectedNasMatch carrier_match;
+            if (!find_protected_nas_message(buffer, n, 0x04, 0x00, 0x5e, &carrier_match))
+                return false;
+            search_start = carrier_match.inner_message_type_offset + 1;
+        }
+
+        for (ssize_t start = search_start; start <= n - 6; start++)
         {
             if (buffer[start] != 0x7e || buffer[start + 1] != 0x00 || buffer[start + 2] != 0x41 ||
                 buffer[start + 3] != 0x79)
@@ -1503,45 +1537,66 @@ int main(int argc, char **argv)
     if (cfg.mutate_nested_optional_ie_omit)
     {
         fprintf(stderr,
-                "[proxy] nested %s omit mutation enabled for later nested Registration Request packets\n",
-                cfg.nested_optional_ie_name);
+                "[proxy] nested %s omit mutation enabled for later nested Registration Request packets%s\n",
+                cfg.nested_optional_ie_name,
+                cfg.nested_optional_ie_require_security_mode_complete
+                    ? " inside Security Mode Complete"
+                    : "");
     }
     if (cfg.mutate_nested_optional_ie_bad_length)
     {
         fprintf(stderr,
-                "[proxy] nested %s bad-length mutation enabled for later nested Registration Request packets: 0x%02x\n",
+                "[proxy] nested %s bad-length mutation enabled for later nested Registration Request packets%s: 0x%02x\n",
                 cfg.nested_optional_ie_name,
+                cfg.nested_optional_ie_require_security_mode_complete
+                    ? " inside Security Mode Complete"
+                    : "",
                 cfg.nested_optional_ie_bad_length_target);
     }
     if (cfg.mutate_nested_optional_ie_duplicate)
     {
         fprintf(stderr,
-                "[proxy] nested %s duplicate-IE mutation enabled for later nested Registration Request packets\n",
-                cfg.nested_optional_ie_name);
+                "[proxy] nested %s duplicate-IE mutation enabled for later nested Registration Request packets%s\n",
+                cfg.nested_optional_ie_name,
+                cfg.nested_optional_ie_require_security_mode_complete
+                    ? " inside Security Mode Complete"
+                    : "");
     }
     if (cfg.mutate_nested_optional_ie_unsupported_sst_sd)
     {
         fprintf(stderr,
-                "[proxy] nested %s unsupported-SST/SD mutation enabled for later nested Registration Request packets\n",
-                cfg.nested_optional_ie_name);
+                "[proxy] nested %s unsupported-SST/SD mutation enabled for later nested Registration Request packets%s\n",
+                cfg.nested_optional_ie_name,
+                cfg.nested_optional_ie_require_security_mode_complete
+                    ? " inside Security Mode Complete"
+                    : "");
     }
     if (cfg.mutate_nested_optional_ie_duplicate_payload_entries)
     {
         fprintf(stderr,
-                "[proxy] nested %s duplicate-payload-entries mutation enabled for later nested Registration Request packets\n",
-                cfg.nested_optional_ie_name);
+                "[proxy] nested %s duplicate-payload-entries mutation enabled for later nested Registration Request packets%s\n",
+                cfg.nested_optional_ie_name,
+                cfg.nested_optional_ie_require_security_mode_complete
+                    ? " inside Security Mode Complete"
+                    : "");
     }
     if (cfg.mutate_nested_optional_ie_set_reserved_bits)
     {
         fprintf(stderr,
-                "[proxy] nested %s set-reserved-bits mutation enabled for later nested Registration Request packets\n",
-                cfg.nested_optional_ie_name);
+                "[proxy] nested %s set-reserved-bits mutation enabled for later nested Registration Request packets%s\n",
+                cfg.nested_optional_ie_name,
+                cfg.nested_optional_ie_require_security_mode_complete
+                    ? " inside Security Mode Complete"
+                    : "");
     }
     if (cfg.mutate_nested_optional_ie_truncate_payload)
     {
         fprintf(stderr,
-                "[proxy] nested %s truncate-payload mutation enabled for later nested Registration Request packets\n",
-                cfg.nested_optional_ie_name);
+                "[proxy] nested %s truncate-payload mutation enabled for later nested Registration Request packets%s\n",
+                cfg.nested_optional_ie_name,
+                cfg.nested_optional_ie_require_security_mode_complete
+                    ? " inside Security Mode Complete"
+                    : "");
     }
 
     int listener = create_listener(&cfg);

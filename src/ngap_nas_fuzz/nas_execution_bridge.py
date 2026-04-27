@@ -375,6 +375,23 @@ def resolve_operator_execution(
             serialize_mutation_plan_value(plain_plan, include_field=True),
         )
 
+    optional_ie_plan = resolve_nested_optional_ie_plan(
+        message_name=message_name,
+        family_name=family_name,
+        operator=operator,
+    )
+    if optional_ie_plan is not None:
+        return (
+            True,
+            "proxy",
+            LIVE_NESTED_OPTIONAL_IE_MUTATION,
+            serialize_mutation_plan_value(
+                optional_ie_plan,
+                include_field=True,
+                include_selector=True,
+            ),
+        )
+
     return (False, "planned", None, None)
 
 
@@ -438,7 +455,11 @@ def render_proxy_command_flag(proxy_mutation: str, value: str | None) -> str:
             value,
             selector=build_nested_nas_selector(message_name="Registration Request"),
         )
-        normalized_value = serialize_mutation_plan_value(plan, include_field=True)
+        normalized_value = serialize_mutation_plan_value(
+            plan,
+            include_field=True,
+            include_selector=True,
+        )
         return f" --mutate-nested-optional-ie {normalized_value}"
     if proxy_mutation == "nested-requested-nssai-omit":
         return " --mutate-nested-requested-nssai-omit"

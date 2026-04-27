@@ -567,6 +567,28 @@ SECURITY_MODE_COMPLETE = NasMessageProfile(
                 ),
             ),
         ),
+        NasFieldDefinition(
+            name="requested_nssai",
+            kind="optional_tlv",
+            mandatory=False,
+            baseline_value="nested Requested NSSAI IE when present",
+            location_hint="inside the nested Registration Request carried by the Security Mode Complete NAS message container",
+            notes="reuses the nested Registration Request embedded in Security Mode Complete to probe protected optional-IE handling",
+            iei_tag="0x2f",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="IMEISV/requested IE corruption",
+                    strategy="named-operators",
+                    target="nested Requested NSSAI IE inside the Security Mode Complete NAS message container",
+                    priority="medium",
+                    rationale="tests optional-IE parsing in a later protected message type",
+                    operators=(
+                        "invalid optional IE length",
+                        "duplicate optional IE",
+                    ),
+                ),
+            ),
+        ),
     ),
     mutation_families=(
         NasMutationFamily(
@@ -596,11 +618,7 @@ SECURITY_MODE_COMPLETE = NasMessageProfile(
         NasMutationFamily(
             name="IMEISV/requested IE corruption",
             target="optional post-security IE payloads",
-            mutation_operators=(
-                "invalid optional IE length",
-                "duplicate optional IE",
-                "unknown optional IE tag",
-            ),
+            mutation_operators=(),
             priority="medium",
             rationale="tests optional-IE parsing in a later protected message type",
         ),

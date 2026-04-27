@@ -552,6 +552,32 @@ def locate_message_optional_ie(
     message_name: str,
     field_name: str,
 ) -> LocatedTlv | None:
+    if message_name == "Security Mode Complete":
+        if field_name not in {"requested_nssai", "fivegmm_capability"}:
+            raise ValueError(
+                f"Optional IE location is not implemented yet for field '{field_name}' in NAS message '{message_name}'."
+            )
+        from .nas_nested_inspector import scan_for_nested_plain_nas_messages
+
+        scan = scan_for_nested_plain_nas_messages(
+            raw_pdu_hex,
+            message_name="Registration Request",
+        )
+        for hit in scan.hits:
+            nested_located = locate_registration_request_optional_ie(hit.raw_pdu_hex, field_name)
+            if nested_located is None:
+                continue
+            return LocatedTlv(
+                tag=nested_located.tag,
+                start_offset=hit.start_offset + nested_located.start_offset,
+                length_octets=nested_located.length_octets,
+                value_offset=hit.start_offset + nested_located.value_offset,
+                value_length=nested_located.value_length,
+                value_hex=nested_located.value_hex,
+                mapped_field_name=nested_located.mapped_field_name,
+            )
+        return None
+
     octets = _parse_raw_pdu_hex(raw_pdu_hex)
     if message_name != "Registration Request":
         raise ValueError(

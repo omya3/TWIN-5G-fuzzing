@@ -36,6 +36,10 @@ def _named_operator_action_kinds(operators: tuple[str, ...]) -> tuple[str, ...]:
             action_kinds.append("truncate-payload")
         elif normalized == "oversized length":
             action_kinds.append("set-leading-length-byte")
+        elif normalized == "invalid optional ie length":
+            action_kinds.append("bad-length")
+        elif normalized == "duplicate optional ie":
+            action_kinds.append("duplicate-ie")
         elif normalized == "all-zero response value":
             action_kinds.append("zero-payload-value")
         elif normalized == "append extra bytes":
@@ -438,6 +442,10 @@ def _nested_optional_ie_action_from_rule(
     if rule.strategy == "bitfield-reserved-bits":
         return ("set-reserved-bits", None)
     if rule.strategy == "named-operators":
+        if normalized_operator == "invalid optional ie length":
+            return ("bad-length", "0xff")
+        if normalized_operator == "duplicate optional ie":
+            return ("duplicate", None)
         if normalized_operator == "unsupported sst/sd combination":
             return ("unsupported-sst-sd", None)
         if normalized_operator == "duplicate nssai entries":
