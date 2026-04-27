@@ -283,6 +283,30 @@ class NasSchemaTests(unittest.TestCase):
         self.assertEqual(auth_append_plan.action, "append-bytes")
         self.assertEqual(auth_append_plan.value, "0x0000")
 
+    def test_execution_bridge_promotes_selected_auth_payload_case_to_proxy(self) -> None:
+        executable_now, execution_mode, proxy_mutation, proxy_value = resolve_operator_execution(
+            message_name="Authentication Response",
+            family_name="authentication parameter corruption",
+            operator="all-zero response value",
+        )
+
+        self.assertTrue(executable_now)
+        self.assertEqual(execution_mode, "proxy")
+        self.assertEqual(proxy_mutation, "authentication-response-zero-response-value")
+        self.assertIsNone(proxy_value)
+
+    def test_execution_bridge_promotes_auth_length_case_to_proxy_with_default_value(self) -> None:
+        executable_now, execution_mode, proxy_mutation, proxy_value = resolve_operator_execution(
+            message_name="Authentication Response",
+            family_name="authentication parameter corruption",
+            operator="oversized length",
+        )
+
+        self.assertTrue(executable_now)
+        self.assertEqual(execution_mode, "proxy")
+        self.assertEqual(proxy_mutation, "authentication-response-parameter-length")
+        self.assertEqual(proxy_value, "0xff")
+
     def test_identity_response_field_inspection_uses_schema_locator(self) -> None:
         report = inspect_nas_message_fields("7e:00:5c:11:22:33", message_name="Identity Response")
         fields = {field.name: field for field in report.fields}

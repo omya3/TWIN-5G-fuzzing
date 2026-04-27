@@ -262,6 +262,10 @@ def _result_hint(proxy_mutation: str) -> str:
         return "expected identity-response security-header handling result"
     if proxy_mutation == "authentication-response-security-header":
         return "expected authentication-response security-header handling result"
+    if proxy_mutation == "authentication-response-zero-response-value":
+        return "expected authentication-response payload handling result"
+    if proxy_mutation == "authentication-response-parameter-length":
+        return "expected authentication-response payload handling result"
     return "expected NAS handling result"
 
 

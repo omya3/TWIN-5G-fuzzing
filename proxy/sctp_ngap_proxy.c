@@ -35,6 +35,8 @@ struct ProxyConfig
     bool mutate_initial_nas_security_header;
     bool mutate_identity_response_security_header;
     bool mutate_authentication_response_security_header;
+    bool mutate_authentication_response_zero_response_value;
+    bool mutate_authentication_response_parameter_length;
     bool mutate_mobile_identity_length;
     bool mutate_mobile_identity_tail_bcd;
     bool mutate_mobile_identity_type_bits;
@@ -52,6 +54,7 @@ struct ProxyConfig
     uint8_t initial_nas_target_security_header;
     uint8_t identity_response_target_security_header;
     uint8_t authentication_response_target_security_header;
+    uint8_t authentication_response_target_parameter_length;
     uint8_t mobile_identity_tail_bcd_target;
     uint8_t nested_optional_ie_tag;
     uint8_t nested_optional_ie_bad_length_target;
@@ -82,6 +85,8 @@ static void usage(const char *program)
             "          [--mutate-initial-nas-security-header BYTE]\n"
             "          [--mutate-identity-response-security-header BYTE]\n"
             "          [--mutate-authentication-response-security-header BYTE]\n"
+            "          [--mutate-authentication-response-zero-response-value]\n"
+            "          [--mutate-authentication-response-parameter-length BYTE]\n"
             "          [--mutate-mobile-identity-length WORD]\n"
             "          [--mutate-mobile-identity-tail-bcd BYTE]\n"
             "          [--mutate-mobile-identity-type-bits]\n"
@@ -107,6 +112,10 @@ static void usage(const char *program)
             "as 0x01, 0x02, 0x03, or 0x04, or\n"
             "replace the Authentication Response plain security header 0x00 -> another value such\n"
             "as 0x01, 0x02, 0x03, or 0x04, or\n"
+            "zero the Authentication Response parameter value bytes while preserving the outer\n"
+            "plain NAS shell and parameter length, or\n"
+            "replace the Authentication Response parameter length byte 0x10 -> another value\n"
+            "such as 0xff while preserving the payload bytes, or\n"
             "corrupt the Registration Request mobile-identity length 0x000d -> another value\n"
             "such as 0x0000, 0x0001, 0x000c, or 0x00ff, or\n"
             "patch the Registration Request mobile-identity tail octet 0x2e -> another value\n"
@@ -347,6 +356,8 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         .mutate_initial_nas_security_header = false,
         .mutate_identity_response_security_header = false,
         .mutate_authentication_response_security_header = false,
+        .mutate_authentication_response_zero_response_value = false,
+        .mutate_authentication_response_parameter_length = false,
         .mutate_mobile_identity_length = false,
         .mutate_mobile_identity_tail_bcd = false,
         .mutate_mobile_identity_type_bits = false,
@@ -364,6 +375,7 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         .initial_nas_target_security_header = 0x01,
         .identity_response_target_security_header = 0x01,
         .authentication_response_target_security_header = 0x01,
+        .authentication_response_target_parameter_length = 0x10,
         .mobile_identity_tail_bcd_target = 0x2a,
         .nested_optional_ie_tag = 0x00,
         .nested_optional_ie_bad_length_target = 0xff,
@@ -445,6 +457,16 @@ static struct ProxyConfig parse_args(int argc, char **argv)
             cfg.authentication_response_target_security_header =
                 parse_byte_arg("--mutate-authentication-response-security-header", argv[++i]);
         }
+        else if (strcmp(argv[i], "--mutate-authentication-response-zero-response-value") == 0)
+        {
+            cfg.mutate_authentication_response_zero_response_value = true;
+        }
+        else if (strcmp(argv[i], "--mutate-authentication-response-parameter-length") == 0 && i + 1 < argc)
+        {
+            cfg.mutate_authentication_response_parameter_length = true;
+            cfg.authentication_response_target_parameter_length =
+                parse_byte_arg("--mutate-authentication-response-parameter-length", argv[++i]);
+        }
         else if (strcmp(argv[i], "--mutate-mobile-identity-length-zero") == 0)
         {
             cfg.mutate_mobile_identity_length = true;
@@ -516,6 +538,10 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         mutation_modes++;
     if (cfg.mutate_authentication_response_security_header)
         mutation_modes++;
+    if (cfg.mutate_authentication_response_zero_response_value)
+        mutation_modes++;
+    if (cfg.mutate_authentication_response_parameter_length)
+        mutation_modes++;
     if (cfg.mutate_mobile_identity_length)
         mutation_modes++;
     if (cfg.mutate_mobile_identity_tail_bcd)
@@ -540,7 +566,7 @@ static struct ProxyConfig parse_args(int argc, char **argv)
     if (mutation_modes > 1)
     {
         fprintf(stderr,
-                "Choose only one mutation mode at a time: message-type, identity-response-message-type, authentication-response-message-type, registration-type-and-ngksi, security-header, identity-response-security-header, authentication-response-security-header, mobile-identity-length, mobile-identity-tail-bcd, mobile-identity-type-bits, mutate-nested-optional-ie, nested-requested-nssai-omit, nested-requested-nssai-bad-length, nested-fivegmm-capability-omit, or nested-fivegmm-capability-bad-length.\n");
+                "Choose only one mutation mode at a time: message-type, identity-response-message-type, authentication-response-message-type, registration-type-and-ngksi, security-header, identity-response-security-header, authentication-response-security-header, authentication-response-zero-response-value, authentication-response-parameter-length, mobile-identity-length, mobile-identity-tail-bcd, mobile-identity-type-bits, mutate-nested-optional-ie, nested-requested-nssai-omit, nested-requested-nssai-bad-length, nested-fivegmm-capability-omit, or nested-fivegmm-capability-bad-length.\n");
         exit(2);
     }
 
@@ -723,6 +749,8 @@ static bool maybe_patch_selected_nas(
         !cfg->mutate_initial_nas_security_header &&
         !cfg->mutate_identity_response_security_header &&
         !cfg->mutate_authentication_response_security_header &&
+        !cfg->mutate_authentication_response_zero_response_value &&
+        !cfg->mutate_authentication_response_parameter_length &&
         !cfg->mutate_mobile_identity_length &&
         !cfg->mutate_mobile_identity_tail_bcd &&
         !cfg->mutate_mobile_identity_type_bits &&
@@ -837,6 +865,50 @@ static bool maybe_patch_selected_nas(
                         i + 1,
                         cfg->authentication_response_target_security_header);
                 buffer[i + 1] = cfg->authentication_response_target_security_header;
+                runtime->selected_nas_mutation_applied = true;
+                return true;
+            }
+        }
+    }
+
+    if (cfg->mutate_authentication_response_zero_response_value)
+    {
+        for (ssize_t i = 0; i <= n - 5; i++)
+        {
+            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x57 &&
+                buffer[i + 3] == 0x2d)
+            {
+                uint8_t value_length = buffer[i + 4];
+                ssize_t value_offset = i + 5;
+                if (value_length == 0)
+                    return false;
+                if (value_offset + value_length > n)
+                    return false;
+
+                fprintf(stderr,
+                        "[proxy] zeroing Authentication Response parameter value at offset=%zd length=%u while preserving tag/length\n",
+                        value_offset,
+                        value_length);
+                memset(buffer + value_offset, 0x00, value_length);
+                runtime->selected_nas_mutation_applied = true;
+                return true;
+            }
+        }
+    }
+
+    if (cfg->mutate_authentication_response_parameter_length)
+    {
+        for (ssize_t i = 0; i <= n - 5; i++)
+        {
+            if (buffer[i] == 0x7e && buffer[i + 1] == 0x00 && buffer[i + 2] == 0x57 &&
+                buffer[i + 3] == 0x2d)
+            {
+                fprintf(stderr,
+                        "[proxy] patching Authentication Response parameter length at offset=%zd 0x%02x -> 0x%02x while preserving payload bytes\n",
+                        i + 4,
+                        buffer[i + 4],
+                        cfg->authentication_response_target_parameter_length);
+                buffer[i + 4] = cfg->authentication_response_target_parameter_length;
                 runtime->selected_nas_mutation_applied = true;
                 return true;
             }
@@ -1264,6 +1336,17 @@ int main(int argc, char **argv)
         fprintf(stderr,
                 "[proxy] Authentication Response security-header mutation enabled: 0x00 -> 0x%02x\n",
                 cfg.authentication_response_target_security_header);
+    }
+    if (cfg.mutate_authentication_response_zero_response_value)
+    {
+        fprintf(stderr,
+                "[proxy] Authentication Response payload mutation enabled: zero response value bytes while preserving tag/length\n");
+    }
+    if (cfg.mutate_authentication_response_parameter_length)
+    {
+        fprintf(stderr,
+                "[proxy] Authentication Response parameter-length mutation enabled: 0x10 -> 0x%02x\n",
+                cfg.authentication_response_target_parameter_length);
     }
     if (cfg.mutate_mobile_identity_length)
     {

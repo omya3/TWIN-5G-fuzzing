@@ -18,6 +18,9 @@ IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION = "identity-response-message-type"
 IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION = "identity-response-security-header"
 AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION = "authentication-response-message-type"
 AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION = "authentication-response-security-header"
+AUTHENTICATION_RESPONSE_ZERO_RESPONSE_VALUE_MUTATION = "authentication-response-zero-response-value"
+AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION = "authentication-response-parameter-length"
+AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_DEFAULT = "0xff"
 
 
 @dataclass(frozen=True)
@@ -163,6 +166,20 @@ _EXECUTION_BRIDGES: tuple[NasExecutionBridge, ...] = (
         execution_mode="proxy",
         operator_pattern=r"0x00 -> (0x[0-9a-f]+)",
     ),
+    NasExecutionBridge(
+        message_name="Authentication Response",
+        family_name="authentication parameter corruption",
+        proxy_mutation=AUTHENTICATION_RESPONSE_ZERO_RESPONSE_VALUE_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"^all-zero response value$",
+    ),
+    NasExecutionBridge(
+        message_name="Authentication Response",
+        family_name="authentication parameter corruption",
+        proxy_mutation=AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"^oversized length$",
+    ),
 )
 
 
@@ -277,6 +294,12 @@ def resolve_operator_execution(
                     family_name=family_name,
                     operator=operator,
                 )
+            elif bridge.proxy_mutation == AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION:
+                proxy_value = (
+                    match.group(1)
+                    if match is not None and match.groups()
+                    else AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_DEFAULT
+                )
             else:
                 proxy_value = match.group(1) if match.groups() else None
         return (True, bridge.execution_mode, bridge.proxy_mutation, proxy_value)
@@ -349,6 +372,13 @@ def render_operator_for_value(base_operator: str, proxy_mutation: str, value: st
 def render_proxy_command_flag(proxy_mutation: str, value: str | None) -> str:
     if proxy_mutation == "mobile-identity-toggle-type-bits":
         return " --mutate-mobile-identity-type-bits"
+    if proxy_mutation == AUTHENTICATION_RESPONSE_ZERO_RESPONSE_VALUE_MUTATION:
+        return " --mutate-authentication-response-zero-response-value"
+    if proxy_mutation == AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION:
+        return (
+            " --mutate-authentication-response-parameter-length "
+            f"{value or AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_DEFAULT}"
+        )
     if proxy_mutation == LIVE_NESTED_OPTIONAL_IE_MUTATION:
         plan = deserialize_mutation_plan_value(
             value,
