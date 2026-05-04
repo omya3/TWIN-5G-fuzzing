@@ -45,6 +45,8 @@ _PLAIN_5GMM_MESSAGE_TYPES = {
     0x5E: "Security Mode Complete",
 }
 
+_UL_NAS_TRANSPORT_MESSAGE_TYPE = 0x67
+
 
 def _message_field_schema(message_name: str, field_name: str) -> NasFieldSchema:
     return get_nas_message_schema(message_name).get_field(field_name)
@@ -341,6 +343,56 @@ def detect_plain_5gmm_message_name(raw_pdu_hex: str) -> str:
     return message_name
 
 
+def _find_nested_plain_message_start(
+    octets: list[int],
+    *,
+    message_type: int,
+) -> int | None:
+    if len(octets) >= 3 and octets[0] == 0x7E and octets[1] == 0x00 and octets[2] == message_type:
+        return 0
+
+    if len(octets) < 10:
+        return None
+
+    for index in range(0, len(octets) - 9):
+        if octets[index] != 0x7E:
+            continue
+        if octets[index + 7] != 0x7E or octets[index + 8] != 0x00:
+            continue
+        if octets[index + 9] != message_type:
+            continue
+        return index + 7
+
+    return None
+
+
+def _pdu_session_tlv_start_offset(
+    raw_pdu_hex: str,
+    octets: list[int] | None = None,
+) -> tuple[int, int]:
+    parsed_octets = octets or _parse_raw_pdu_hex(raw_pdu_hex)
+    inner_start = _find_nested_plain_message_start(
+        parsed_octets,
+        message_type=_UL_NAS_TRANSPORT_MESSAGE_TYPE,
+    )
+    if inner_start is None:
+        raise ValueError(
+            "Could not locate a plain UL NAS Transport container for the PDU Session Establishment Request baseline."
+        )
+    if len(parsed_octets) < inner_start + 6:
+        raise ValueError("PDU Session Establishment Request baseline is too short for the UL NAS Transport header.")
+
+    payload_container_length = (
+        (parsed_octets[inner_start + 4] << 8) | parsed_octets[inner_start + 5]
+    )
+    tlv_start_offset = inner_start + 6 + payload_container_length
+    if tlv_start_offset > len(parsed_octets):
+        raise ValueError(
+            "PDU Session Establishment Request payload container length points beyond the available packet bytes."
+        )
+    return inner_start, tlv_start_offset
+
+
 def _inspect_schema_defined_plain_message(
     raw_pdu_hex: str,
     *,
@@ -366,6 +418,8 @@ def _inspect_schema_defined_plain_message(
 
     located_fields: dict[str, LocatedField] = {}
     for field_schema in schema.fields:
+        if field_schema.iei_tag:
+            continue
         located = _locate_field_from_schema(
             octets,
             field_schema,
@@ -407,6 +461,8 @@ def _inspect_schema_defined_protected_message(
 
     located_fields: dict[str, LocatedField] = {}
     for field_schema in schema.fields:
+        if field_schema.iei_tag:
+            continue
         located = _locate_field_from_schema(
             octets,
             field_schema,
@@ -417,6 +473,52 @@ def _inspect_schema_defined_protected_message(
             continue
         report.fields.append(located)
         located_fields[field_schema.field_name] = located
+    return report
+
+
+def _inspect_pdu_session_establishment_request_fields(
+    raw_pdu_hex: str,
+) -> RegistrationRequestFieldReport:
+    octets = _parse_raw_pdu_hex(raw_pdu_hex)
+    report = RegistrationRequestFieldReport(
+        raw_pdu_hex=raw_pdu_hex,
+        total_octets=len(octets),
+        message_name="PDU Session Establishment Request",
+    )
+    _, tlv_start_offset = _pdu_session_tlv_start_offset(raw_pdu_hex, octets)
+
+    tlv_sequence = parse_tlv_sequence(octets, start_offset=tlv_start_offset)
+    report.warnings.extend(tlv_sequence.warnings)
+    for tlv in tlv_sequence.tlvs:
+        report.tlvs.append(
+            _located_tlv_from_parsed("PDU Session Establishment Request", tlv)
+        )
+
+    mapped_tlvs = {tlv.mapped_field_name: tlv for tlv in report.tlvs if tlv.mapped_field_name}
+    for field_schema in _optional_ie_field_schemas("PDU Session Establishment Request"):
+        tlv = mapped_tlvs.get(field_schema.field_name)
+        if tlv is None:
+            report.fields.append(
+                LocatedField(
+                    name=field_schema.field_name,
+                    kind=field_schema.kind,
+                    present=False,
+                    details="not detected in trailing TLV scan",
+                )
+            )
+        else:
+            report.fields.append(
+                LocatedField(
+                    name=field_schema.field_name,
+                    kind=field_schema.kind,
+                    present=True,
+                    start_offset=tlv.start_offset,
+                    length=2 + tlv.value_length,
+                    value_hex=f"{tlv.tag}:{tlv.value_hex}",
+                    details=f"tag {tlv.tag}, length {tlv.value_length}",
+                )
+            )
+
     return report
 
 
@@ -443,9 +545,13 @@ def inspect_nas_message_fields(
             raw_pdu_hex,
             message_name=resolved_message_name,
         )
+    if resolved_message_name == "PDU Session Establishment Request":
+        return _inspect_pdu_session_establishment_request_fields(raw_pdu_hex)
     raise ValueError(
         f"Field inspection is not implemented yet for NAS message '{resolved_message_name}'."
     )
+
+
 def _located_tlv_from_parsed(message_name: str, tlv: ParsedTlv) -> LocatedTlv:
     return LocatedTlv(
         tag=f"0x{tlv.tag:02x}",
@@ -518,20 +624,55 @@ def locate_optional_nas_ie(
     return _located_tlv_from_parsed(message_name, tlv)
 
 
+def _optional_ie_start_offset_from_anchor_field(
+    raw_pdu_hex: str,
+    *,
+    message_name: str,
+    anchor_field_name: str,
+    octets: list[int] | None = None,
+) -> int:
+    parsed_octets = octets or _parse_raw_pdu_hex(raw_pdu_hex)
+    schema = get_nas_message_schema(message_name)
+    anchor_schema = schema.get_field(anchor_field_name)
+    located_fields: dict[str, LocatedField] = {}
+    warnings: list[str] = []
+    anchor_field: LocatedField | None = None
+    for field_schema in schema.fields:
+        if field_schema.iei_tag:
+            continue
+        located = _locate_field_from_schema(
+            parsed_octets,
+            field_schema,
+            prior_fields=located_fields,
+            warnings=warnings,
+        )
+        if located is None:
+            continue
+        located_fields[field_schema.field_name] = located
+        if field_schema.field_name == anchor_field_name:
+            anchor_field = located
+            break
+
+    if anchor_field is None:
+        raise ValueError(
+            f"Could not locate anchor field '{anchor_field_name}' for NAS message '{message_name}'."
+        )
+    return _field_end_offset_from_schema(
+        parsed_octets,
+        anchor_schema,
+        located_fields,
+    )
+
+
 def _registration_request_tlv_start_offset(
     raw_pdu_hex: str,
     octets: list[int] | None = None,
 ) -> int:
-    parsed_octets = octets or _parse_raw_pdu_hex(raw_pdu_hex)
-    schema = get_nas_message_schema("Registration Request")
-    mobile_identity_length_field = locate_registration_request_field(
+    return _optional_ie_start_offset_from_anchor_field(
         raw_pdu_hex,
-        "mobile_identity_length",
-    )
-    return _field_end_offset_from_schema(
-        parsed_octets,
-        schema.get_field("mobile_identity_value"),
-        {"mobile_identity_length": mobile_identity_length_field},
+        message_name="Registration Request",
+        anchor_field_name="mobile_identity_value",
+        octets=octets,
     )
 
 
@@ -552,19 +693,30 @@ def locate_message_optional_ie(
     message_name: str,
     field_name: str,
 ) -> LocatedTlv | None:
-    if message_name == "Security Mode Complete":
-        if field_name not in {"requested_nssai", "fivegmm_capability"}:
+    field_schema = _message_field_schema(message_name, field_name)
+    locator = field_schema.locator
+    if locator is None:
+        raise ValueError(
+            f"Optional IE location is not implemented yet for field '{field_name}' in NAS message '{message_name}'."
+        )
+
+    if locator.strategy == "nested-optional-tlv":
+        if not locator.nested_message_name:
             raise ValueError(
-                f"Optional IE location is not implemented yet for field '{field_name}' in NAS message '{message_name}'."
+                f"Field '{field_name}' for NAS message '{message_name}' is missing nested-message locator metadata."
             )
         from .nas_nested_inspector import scan_for_nested_plain_nas_messages
 
         scan = scan_for_nested_plain_nas_messages(
             raw_pdu_hex,
-            message_name="Registration Request",
+            message_name=locator.nested_message_name,
         )
         for hit in scan.hits:
-            nested_located = locate_registration_request_optional_ie(hit.raw_pdu_hex, field_name)
+            nested_located = locate_message_optional_ie(
+                hit.raw_pdu_hex,
+                message_name=locator.nested_message_name,
+                field_name=field_name,
+            )
             if nested_located is None:
                 continue
             return LocatedTlv(
@@ -578,13 +730,28 @@ def locate_message_optional_ie(
             )
         return None
 
-    octets = _parse_raw_pdu_hex(raw_pdu_hex)
-    if message_name != "Registration Request":
+    if locator.strategy == "nested-5gsm-optional-tlv":
+        octets = _parse_raw_pdu_hex(raw_pdu_hex)
+        _, start_offset = _pdu_session_tlv_start_offset(raw_pdu_hex, octets)
+        return locate_optional_nas_ie(
+            raw_pdu_hex,
+            message_name=message_name,
+            field_name=field_name,
+            tlv_start_offset=start_offset,
+        )
+
+    if locator.strategy != "optional-tlv-after-field" or not locator.anchor_field:
         raise ValueError(
             f"Optional IE location is not implemented yet for NAS message '{message_name}'."
         )
 
-    start_offset = _registration_request_tlv_start_offset(raw_pdu_hex, octets)
+    octets = _parse_raw_pdu_hex(raw_pdu_hex)
+    start_offset = _optional_ie_start_offset_from_anchor_field(
+        raw_pdu_hex,
+        message_name=message_name,
+        anchor_field_name=locator.anchor_field,
+        octets=octets,
+    )
     return locate_optional_nas_ie(
         raw_pdu_hex,
         message_name=message_name,

@@ -20,6 +20,10 @@ from src.ngap_nas_fuzz.nas_scheduler import (
 
 
 class LaterPacketLivePromotionTests(unittest.TestCase):
+    _NESTED_RR_PREFIX = (
+        "container:nested-nas-message,message:Registration Request,occurrence:later,"
+    )
+
     def test_execution_bridge_promotes_requested_nssai_omit_to_live_proxy(self) -> None:
         executable, execution_mode, proxy_mutation, proxy_value = resolve_operator_execution(
             message_name="Registration Request",
@@ -30,7 +34,10 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertTrue(executable)
         self.assertEqual(execution_mode, "proxy")
         self.assertEqual(proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
-        self.assertEqual(proxy_value, "field:requested_nssai,action:omit")
+        self.assertEqual(
+            proxy_value,
+            self._NESTED_RR_PREFIX + "field:requested_nssai,action:omit",
+        )
 
     def test_execution_bridge_promotes_requested_nssai_invalid_length_to_live_proxy(self) -> None:
         executable, execution_mode, proxy_mutation, proxy_value = resolve_operator_execution(
@@ -44,7 +51,7 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertEqual(proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
         self.assertEqual(
             proxy_value,
-            "field:requested_nssai,action:bad-length,length:0xff",
+            self._NESTED_RR_PREFIX + "field:requested_nssai,action:bad-length,length:0xff",
         )
 
     def test_execution_bridge_promotes_requested_nssai_duplicate_ie_to_live_proxy(self) -> None:
@@ -57,7 +64,10 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertTrue(executable)
         self.assertEqual(execution_mode, "proxy")
         self.assertEqual(proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
-        self.assertEqual(proxy_value, "field:requested_nssai,action:duplicate")
+        self.assertEqual(
+            proxy_value,
+            self._NESTED_RR_PREFIX + "field:requested_nssai,action:duplicate",
+        )
 
     def test_execution_bridge_promotes_requested_nssai_unsupported_sst_sd_to_live_proxy(self) -> None:
         executable, execution_mode, proxy_mutation, proxy_value = resolve_operator_execution(
@@ -71,7 +81,7 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertEqual(proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
         self.assertEqual(
             proxy_value,
-            "field:requested_nssai,action:unsupported-sst-sd",
+            self._NESTED_RR_PREFIX + "field:requested_nssai,action:unsupported-sst-sd",
         )
 
     def test_execution_bridge_promotes_requested_nssai_duplicate_entries_to_live_proxy(self) -> None:
@@ -86,7 +96,7 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertEqual(proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
         self.assertEqual(
             proxy_value,
-            "field:requested_nssai,action:duplicate-payload-entries",
+            self._NESTED_RR_PREFIX + "field:requested_nssai,action:duplicate-payload-entries",
         )
 
     def test_execution_bridge_promotes_fivegmm_omit_to_live_proxy(self) -> None:
@@ -99,7 +109,10 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertTrue(executable)
         self.assertEqual(execution_mode, "proxy")
         self.assertEqual(proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
-        self.assertEqual(proxy_value, "field:fivegmm_capability,action:omit")
+        self.assertEqual(
+            proxy_value,
+            self._NESTED_RR_PREFIX + "field:fivegmm_capability,action:omit",
+        )
 
     def test_execution_bridge_promotes_fivegmm_oversized_length_to_live_proxy(self) -> None:
         executable, execution_mode, proxy_mutation, proxy_value = resolve_operator_execution(
@@ -113,7 +126,22 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertEqual(proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
         self.assertEqual(
             proxy_value,
-            "field:fivegmm_capability,action:bad-length,length:0xff",
+            self._NESTED_RR_PREFIX + "field:fivegmm_capability,action:bad-length,length:0xff",
+        )
+
+    def test_execution_bridge_promotes_fivegmm_duplicate_ie_to_live_proxy(self) -> None:
+        executable, execution_mode, proxy_mutation, proxy_value = resolve_operator_execution(
+            message_name="Registration Request",
+            family_name="5GMM capability corruption",
+            operator="duplicate IE",
+        )
+
+        self.assertTrue(executable)
+        self.assertEqual(execution_mode, "proxy")
+        self.assertEqual(proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
+        self.assertEqual(
+            proxy_value,
+            self._NESTED_RR_PREFIX + "field:fivegmm_capability,action:duplicate",
         )
 
     def test_execution_bridge_promotes_fivegmm_reserved_bits_to_live_proxy(self) -> None:
@@ -128,7 +156,7 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertEqual(proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
         self.assertEqual(
             proxy_value,
-            "field:fivegmm_capability,action:set-reserved-bits",
+            self._NESTED_RR_PREFIX + "field:fivegmm_capability,action:set-reserved-bits",
         )
 
     def test_execution_bridge_promotes_fivegmm_truncation_to_live_proxy(self) -> None:
@@ -143,7 +171,7 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertEqual(proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
         self.assertEqual(
             proxy_value,
-            "field:fivegmm_capability,action:truncate-payload",
+            self._NESTED_RR_PREFIX + "field:fivegmm_capability,action:truncate-payload",
         )
 
     def test_scheduler_keeps_live_proxy_case_fresh_after_simulation_history(self) -> None:
@@ -182,7 +210,7 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertEqual(promoted.candidate.proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
         self.assertEqual(
             promoted.candidate.proxy_value,
-            "field:requested_nssai,action:omit",
+            self._NESTED_RR_PREFIX + "field:requested_nssai,action:omit",
         )
         self.assertIn("untried operator", promoted.reasons)
 
@@ -218,7 +246,9 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertIsNotNone(run)
         assert run is not None
         self.assertIn(
-            "--mutate-nested-optional-ie field:requested_nssai,action:omit",
+            "--mutate-nested-optional-ie '"
+            + self._NESTED_RR_PREFIX
+            + "field:requested_nssai,action:omit'",
             run.proxy_command,
         )
         self.assertIn("untried operator", run.recommendation_reasons)
@@ -259,7 +289,7 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertEqual(promoted.candidate.proxy_mutation, LIVE_NESTED_OPTIONAL_IE_MUTATION)
         self.assertEqual(
             promoted.candidate.proxy_value,
-            "field:fivegmm_capability,action:omit",
+            self._NESTED_RR_PREFIX + "field:fivegmm_capability,action:omit",
         )
         self.assertIn("untried operator", promoted.reasons)
 
@@ -295,7 +325,9 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
         self.assertIsNotNone(run)
         assert run is not None
         self.assertIn(
-            "--mutate-nested-optional-ie field:fivegmm_capability,action:set-reserved-bits",
+            "--mutate-nested-optional-ie '"
+            + self._NESTED_RR_PREFIX
+            + "field:fivegmm_capability,action:set-reserved-bits'",
             run.proxy_command,
         )
         self.assertIn("untried operator", run.recommendation_reasons)
@@ -314,7 +346,7 @@ class LaterPacketLivePromotionTests(unittest.TestCase):
             family_name="requested NSSAI corruption",
             operator="omit IE entirely",
             proxy_mutation=LIVE_NESTED_OPTIONAL_IE_MUTATION,
-            proxy_value="field:requested_nssai,action:omit",
+            proxy_value=self._NESTED_RR_PREFIX + "field:requested_nssai,action:omit",
         )
 
         self.assertEqual(legacy_key, generic_key)

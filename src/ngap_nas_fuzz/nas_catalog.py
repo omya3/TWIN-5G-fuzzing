@@ -215,6 +215,13 @@ REGISTRATION_REQUEST = NasMessageProfile(
                 ),
                 NasFieldGenerationRule(
                     family_name="5GMM capability corruption",
+                    strategy="optional-ie-duplicate",
+                    target="5GMM capability IE",
+                    priority="medium",
+                    rationale="tests generic duplicate-optional-IE handling beyond Requested NSSAI-specific cases",
+                ),
+                NasFieldGenerationRule(
+                    family_name="5GMM capability corruption",
                     strategy="bitfield-reserved-bits",
                     target="5GMM capability IE",
                     priority="medium",
@@ -304,6 +311,7 @@ REGISTRATION_REQUEST = NasMessageProfile(
             mutation_operators=(
                 "truncation",
                 "oversized length",
+                "duplicate IE",
                 "reserved bits set",
             ),
             priority="medium",
@@ -370,6 +378,17 @@ IDENTITY_RESPONSE = NasMessageProfile(
                     target="mobile identity value",
                     priority="medium",
                     rationale="tests whether the AMF safely handles a truncated identity-response payload once the outer message shell is valid",
+                ),
+                NasFieldGenerationRule(
+                    family_name="identity payload corruption",
+                    strategy="named-operators",
+                    target="mobile identity value",
+                    priority="medium",
+                    rationale="tests the identity-specific decoder path once the AMF expects an identity response",
+                    operators=(
+                        "invalid BCD",
+                        "unsupported identity type",
+                    ),
                 ),
             ),
         ),
@@ -589,6 +608,53 @@ SECURITY_MODE_COMPLETE = NasMessageProfile(
                 ),
             ),
         ),
+        NasFieldDefinition(
+            name="fivegmm_capability",
+            kind="tlv_payload",
+            mandatory=False,
+            baseline_value="nested UE 5GMM capability IE when present",
+            location_hint="inside the nested Registration Request carried by the Security Mode Complete NAS message container",
+            notes="reuses the nested Registration Request embedded in Security Mode Complete to probe protected optional-IE handling beyond Requested NSSAI",
+            iei_tag="0x10",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="5GMM capability corruption",
+                    strategy="payload-truncation",
+                    target="nested UE 5GMM capability IE inside the Security Mode Complete NAS message container",
+                    priority="medium",
+                    rationale="tests optional-IE parsing in a later protected message type with a second field class",
+                ),
+                NasFieldGenerationRule(
+                    family_name="5GMM capability corruption",
+                    strategy="optional-ie-bad-length",
+                    target="nested UE 5GMM capability IE inside the Security Mode Complete NAS message container",
+                    priority="medium",
+                    rationale="tests optional-IE parsing in a later protected message type with a second field class",
+                    candidate_values=("oversized",),
+                ),
+                NasFieldGenerationRule(
+                    family_name="5GMM capability corruption",
+                    strategy="optional-ie-duplicate",
+                    target="nested UE 5GMM capability IE inside the Security Mode Complete NAS message container",
+                    priority="medium",
+                    rationale="tests generic duplicate-optional-IE handling in a later protected message type",
+                ),
+                NasFieldGenerationRule(
+                    family_name="5GMM capability corruption",
+                    strategy="bitfield-reserved-bits",
+                    target="nested UE 5GMM capability IE inside the Security Mode Complete NAS message container",
+                    priority="medium",
+                    rationale="tests optional-IE parsing in a later protected message type with a second field class",
+                ),
+                NasFieldGenerationRule(
+                    family_name="5GMM capability corruption",
+                    strategy="optional-ie-omit",
+                    target="nested UE 5GMM capability IE inside the Security Mode Complete NAS message container",
+                    priority="medium",
+                    rationale="tests optional-IE parsing in a later protected message type with a second field class",
+                ),
+            ),
+        ),
     ),
     mutation_families=(
         NasMutationFamily(
@@ -622,6 +688,13 @@ SECURITY_MODE_COMPLETE = NasMessageProfile(
             priority="medium",
             rationale="tests optional-IE parsing in a later protected message type",
         ),
+        NasMutationFamily(
+            name="5GMM capability corruption",
+            target="optional post-security IE payloads",
+            mutation_operators=(),
+            priority="medium",
+            rationale="tests optional-IE parsing in a later protected message type with a second field class",
+        ),
     ),
 )
 
@@ -632,6 +705,65 @@ PDU_SESSION_ESTABLISHMENT_REQUEST = NasMessageProfile(
     procedure_phase="post-registration session setup",
     expected_precondition="should appear after successful registration and session initiation",
     baseline_signature="5GSM payload nested inside NAS transport",
+    field_definitions=(
+        NasFieldDefinition(
+            name="session_type",
+            kind="optional_tlv",
+            mandatory=False,
+            baseline_value="0x81",
+            location_hint="post-registration session TLV region after the UL NAS Transport payload container",
+            notes="single-octet session-type value carried in the later session-setup NAS payload",
+            iei_tag="0x12",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="session IE corruption",
+                    strategy="named-operators",
+                    target="PDU session type IE",
+                    priority="medium",
+                    rationale="extends coverage beyond 5GMM into later NAS session-related content",
+                    operators=("invalid session type value",),
+                ),
+            ),
+        ),
+        NasFieldDefinition(
+            name="s_nssai",
+            kind="optional_tlv",
+            mandatory=False,
+            baseline_value="0x01",
+            location_hint="post-registration session TLV region after the UL NAS Transport payload container",
+            notes="single-octet S-NSSAI payload in the baseline later session-setup sample",
+            iei_tag="0x22",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="session IE corruption",
+                    strategy="named-operators",
+                    target="S-NSSAI IE",
+                    priority="medium",
+                    rationale="extends coverage beyond 5GMM into later NAS session-related content",
+                    operators=("bad S-NSSAI encoding",),
+                ),
+            ),
+        ),
+        NasFieldDefinition(
+            name="dnn",
+            kind="tlv_payload",
+            mandatory=False,
+            baseline_value="08:69:6e:74:65:72:6e:65:74",
+            location_hint="post-registration session TLV region after the UL NAS Transport payload container",
+            notes="DNN payload bytes in the baseline later session-setup sample, including the APN-style label length prefix",
+            iei_tag="0x25",
+            generation_rules=(
+                NasFieldGenerationRule(
+                    family_name="session IE corruption",
+                    strategy="named-operators",
+                    target="DNN IE",
+                    priority="medium",
+                    rationale="extends coverage beyond 5GMM into later NAS session-related content",
+                    operators=("truncate DNN",),
+                ),
+            ),
+        ),
+    ),
     mutation_families=(
         NasMutationFamily(
             name="wrong-state delivery",

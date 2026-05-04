@@ -50,6 +50,9 @@ FAMILY_CHARACTERIZATION_PENALTY_CAP = 16
 FAMILY_DIVERSE_OUTCOME_REPEAT_PENALTY = 24
 FAMILY_LIKELY_SATURATED_PENALTY = 18
 FAMILY_DIVERSE_BEHAVIOR_BONUS = 6
+FAMILY_FIRST_LIVE_EXPLORATION_BONUS = 14
+FAMILY_SIMULATION_TO_LIVE_PROMOTION_BONUS = 10
+FAMILY_LIVE_UNDEREXPLORATION_BONUS = 6
 
 
 @dataclass(frozen=True)
@@ -200,6 +203,14 @@ def _candidate_runtime_key(candidate: NasMutationCandidate) -> tuple[str, str, s
     )
 
 
+def _candidate_summary_key(
+    candidate: NasMutationCandidate,
+) -> tuple[str, str, str, str | None, str | None] | tuple[str, str, str, str]:
+    if candidate.executable_now and candidate.proxy_mutation is not None:
+        return ("runtime",) + _candidate_runtime_key(candidate)
+    return ("operator",) + _candidate_key(candidate)
+
+
 def _observation_runtime_key(
     entry: NasCampaignObservation,
 ) -> tuple[str, str, str | None, str | None] | None:
@@ -214,6 +225,28 @@ def _observation_runtime_key(
 
 def _observation_operator_key(entry: NasCampaignObservation) -> tuple[str, str, str]:
     return (entry.message_name, entry.family_name, entry.operator)
+
+
+def _observation_summary_key(
+    entry: NasCampaignObservation,
+) -> tuple[str, str, str, str | None, str | None] | tuple[str, str, str, str]:
+    executable_now, _, resolved_mutation, resolved_value = resolve_operator_execution(
+        message_name=entry.message_name,
+        family_name=entry.family_name,
+        operator=entry.operator,
+    )
+    if executable_now and resolved_mutation is not None:
+        return (
+            "runtime",
+            entry.message_name,
+            entry.family_name,
+            resolved_mutation,
+            resolved_value,
+        )
+    runtime_key = _observation_runtime_key(entry)
+    if runtime_key is not None:
+        return ("runtime",) + runtime_key
+    return ("operator",) + _observation_operator_key(entry)
 
 
 def _family_saturation_label(
@@ -275,7 +308,7 @@ def summarize_campaign_history(
         candidates = family_candidates.get(family_key, [])
         entries = family_entries.get(family_key, [])
 
-        tried_operator_keys = {_observation_operator_key(entry) for entry in entries}
+        tried_operator_keys = {_observation_summary_key(entry) for entry in entries}
         result_counts: dict[str, int] = {}
         live_result_counts: dict[str, int] = {}
         simulation_result_counts: dict[str, int] = {}
@@ -296,21 +329,23 @@ def summarize_campaign_history(
             )[0][0]
 
         unique_result_classes = tuple(sorted(result_counts))
-        total_known_operators = len({_candidate_key(candidate) for candidate in candidates})
+        total_known_operators = len(
+            {_candidate_summary_key(candidate) for candidate in candidates}
+        )
         executable_known_operators = len(
-            {_candidate_key(candidate) for candidate in candidates if candidate.executable_now}
+            {_candidate_summary_key(candidate) for candidate in candidates if candidate.executable_now}
         )
         tried_operators = len(tried_operator_keys)
         live_tried_operators = len(
             {
-                _observation_operator_key(entry)
+                _observation_summary_key(entry)
                 for entry in entries
                 if entry.result_class != RESULT_SIMULATION_ARTIFACT
             }
         )
         simulation_tried_operators = len(
             {
-                _observation_operator_key(entry)
+                _observation_summary_key(entry)
                 for entry in entries
                 if entry.result_class == RESULT_SIMULATION_ARTIFACT
             }
@@ -378,6 +413,9 @@ def recommend_next_candidates(
     executable_only: bool = False,
 ) -> list[NasSchedulerRecommendation]:
     candidates = list_candidates_for_message(message_name)
+    candidate_order = {
+        _candidate_key(candidate): index for index, candidate in enumerate(candidates)
+    }
     if executable_only:
         candidates = [candidate for candidate in candidates if candidate.live_proxy_capable]
 
@@ -512,6 +550,12 @@ def recommend_next_candidates(
             score += 6
             reasons.append("family not explored yet")
         else:
+            if candidate.live_proxy_capable and not seen_live_results:
+                score += FAMILY_FIRST_LIVE_EXPLORATION_BONUS
+                reasons.append("family has no live result yet")
+                if seen_simulation_results:
+                    score += FAMILY_SIMULATION_TO_LIVE_PROMOTION_BONUS
+                    reasons.append("live promotion would validate a simulation-only family")
             characterization_penalty = min(
                 FAMILY_CHARACTERIZATION_PENALTY_CAP,
                 max(0, explored_operator_count - 1) * FAMILY_CHARACTERIZATION_PENALTY_STEP,
@@ -536,6 +580,14 @@ def recommend_next_candidates(
             if tried is None and explored_operator_count <= 1:
                 score += 5
                 reasons.append("family still underexplored")
+            if (
+                candidate.live_proxy_capable
+                and tried is None
+                and seen_live_results
+                and explored_live_operator_count <= 1
+            ):
+                score += FAMILY_LIVE_UNDEREXPLORATION_BONUS
+                reasons.append("live family coverage is still shallow")
             if seen_live_results and saturation.startswith("likely saturated"):
                 score -= FAMILY_LIKELY_SATURATED_PENALTY
                 reasons.append(f"family appears saturated: {saturation}")
@@ -566,7 +618,7 @@ def recommend_next_candidates(
             not item.candidate.executable_now,
             item.candidate.message_name,
             item.candidate.family_name,
-            item.candidate.operator,
+            candidate_order.get(_candidate_key(item.candidate), 0),
         )
     )
     return recommendations[:limit]

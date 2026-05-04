@@ -28,6 +28,10 @@ _DEEP_DECODER_PATTERNS = (
     re.compile(r"ogs_pkbuf_pull\(\) failed"),
     re.compile(r"Unknown type\(0x[0-9a-f]+\) or not implemented", re.IGNORECASE),
     re.compile(r"decode_5gs_mobile_identity", re.IGNORECASE),
+    re.compile(r"Failed to decode ASN-PDU", re.IGNORECASE),
+    re.compile(r"Failed to decode NGAP-PDU", re.IGNORECASE),
+    re.compile(r"Cannot decode NGAP message", re.IGNORECASE),
+    re.compile(r"abstract-syntax-error-falsely-constructed-message", re.IGNORECASE),
 )
 
 _EARLY_REJECT_PATTERNS = (
@@ -50,6 +54,19 @@ _UE_SUCCESS_PATTERNS = (
     re.compile(r"Initial Registration is successful"),
     re.compile(r"PDU Session establishment is successful"),
 )
+
+_UE_PDU_SESSION_SUCCESS_PATTERNS = (
+    re.compile(r"PDU Session establishment is successful"),
+    re.compile(r"PDU Session Establishment Accept received"),
+)
+
+
+def _success_patterns_for_message(
+    message_name: str | None,
+) -> tuple[re.Pattern[str], ...]:
+    if message_name == "PDU Session Establishment Request":
+        return _UE_PDU_SESSION_SUCCESS_PATTERNS
+    return _UE_SUCCESS_PATTERNS
 
 
 @dataclass
@@ -141,6 +158,7 @@ def classify_proxy_nas_result_texts(
     ue_text: str = "",
     gnb_text: str = "",
     proxy_text: str = "",
+    message_name: str | None = None,
 ) -> ProxyNasResultSuggestion:
     proxy_lines = [line.strip() for line in proxy_text.splitlines() if line.strip()]
     amf_events = parse_amf_log(amf_text)
@@ -179,7 +197,10 @@ def classify_proxy_nas_result_texts(
             evidence=[f"amf: {crash_message}"],
         )
 
-    success_message = _matching_event_message(ue_first_messages, _UE_SUCCESS_PATTERNS)
+    success_message = _matching_event_message(
+        ue_first_messages,
+        _success_patterns_for_message(message_name),
+    )
 
     deep_message = _matching_event_message(amf_first_error_messages, _DEEP_DECODER_PATTERNS)
     if deep_message is None:
@@ -277,7 +298,11 @@ def classify_proxy_nas_result_texts(
     )
 
 
-def classify_proxy_nas_result_logs(logs_dir: Path) -> ProxyNasResultSuggestion:
+def classify_proxy_nas_result_logs(
+    logs_dir: Path,
+    *,
+    message_name: str | None = None,
+) -> ProxyNasResultSuggestion:
     proxy_path = logs_dir / "proxy.log"
     amf_path = logs_dir / "amf.log"
     gnb_path = logs_dir / "gnb.log"
@@ -288,4 +313,5 @@ def classify_proxy_nas_result_logs(logs_dir: Path) -> ProxyNasResultSuggestion:
         amf_text=amf_path.read_text() if amf_path.exists() else "",
         gnb_text=gnb_path.read_text() if gnb_path.exists() else "",
         ue_text=ue_path.read_text() if ue_path.exists() else "",
+        message_name=message_name,
     )

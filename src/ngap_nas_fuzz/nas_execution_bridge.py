@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import shlex
 
 from .nas_schema import (
     build_nested_optional_ie_mutation_plan,
     build_nested_nas_selector,
-    build_nested_registration_request_selector,
     deserialize_mutation_plan_value,
+    NasMutationPlan,
     resolve_plain_field_mutation_plan,
     resolve_nested_optional_ie_plan,
     serialize_mutation_plan_value,
@@ -19,13 +20,27 @@ INITIAL_NAS_MESSAGE_TYPE_MUTATION = "message-type"
 INITIAL_NAS_SECURITY_HEADER_MUTATION = "security-header"
 IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION = "identity-response-message-type"
 IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION = "identity-response-security-header"
+IDENTITY_RESPONSE_TRUNCATE_PAYLOAD_MUTATION = "identity-response-truncate-payload"
+IDENTITY_RESPONSE_INVALID_BCD_MUTATION = "identity-response-invalid-bcd"
+IDENTITY_RESPONSE_UNSUPPORTED_IDENTITY_TYPE_MUTATION = (
+    "identity-response-unsupported-identity-type"
+)
 AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION = "authentication-response-message-type"
 AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION = "authentication-response-security-header"
 AUTHENTICATION_RESPONSE_ZERO_RESPONSE_VALUE_MUTATION = "authentication-response-zero-response-value"
 AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION = "authentication-response-parameter-length"
+AUTHENTICATION_RESPONSE_TRUNCATE_PARAMETER_MUTATION = "authentication-response-truncate-parameter"
+AUTHENTICATION_RESPONSE_APPEND_BYTES_MUTATION = "authentication-response-append-bytes"
+AUTHENTICATION_RESPONSE_INCREMENT_PARAMETER_LENGTH_MUTATION = (
+    "authentication-response-increment-parameter-length"
+)
 AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_DEFAULT = "0xff"
 SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION = "security-mode-complete-message-type"
 SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION = "security-mode-complete-security-header"
+SECURITY_MODE_COMPLETE_WRONG_STATE_INITIAL_MUTATION = "security-mode-complete-wrong-state-initial"
+SECURITY_MODE_COMPLETE_WRONG_STATE_AUTH_MUTATION = "security-mode-complete-wrong-state-auth"
+PDU_SESSION_WRONG_STATE_INITIAL_MUTATION = "pdu-session-wrong-state-initial"
+PDU_SESSION_WRONG_STATE_AUTH_MUTATION = "pdu-session-wrong-state-auth"
 
 
 @dataclass(frozen=True)
@@ -120,11 +135,60 @@ _PROXY_MUTATION_FLAGS = {
     SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION: "--mutate-security-mode-complete-msgtype",
     INITIAL_NAS_SECURITY_HEADER_MUTATION: "--mutate-initial-nas-security-header",
     IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION: "--mutate-identity-response-security-header",
+    IDENTITY_RESPONSE_INVALID_BCD_MUTATION: "--mutate-identity-response-invalid-bcd",
+    IDENTITY_RESPONSE_UNSUPPORTED_IDENTITY_TYPE_MUTATION: "--mutate-identity-response-unsupported-identity-type",
+    IDENTITY_RESPONSE_TRUNCATE_PAYLOAD_MUTATION: "--mutate-identity-response-truncate-payload",
     AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION: "--mutate-authentication-response-security-header",
     SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION: "--mutate-security-mode-complete-security-header",
     "registration-type-and-ngksi": "--mutate-registration-type-and-ngksi",
     "mobile-identity-length": "--mutate-mobile-identity-length",
     "mobile-identity-invalid-bcd-tail": "--mutate-mobile-identity-tail-bcd",
+}
+
+_LIVE_PLAIN_FIELD_PROXY_MUTATIONS: dict[tuple[str, str, str], str] = {
+    ("Registration Request", "message_type", "replace-byte"): INITIAL_NAS_MESSAGE_TYPE_MUTATION,
+    ("Registration Request", "security_header", "replace-byte"): INITIAL_NAS_SECURITY_HEADER_MUTATION,
+    ("Registration Request", "registration_type_and_ngksi", "replace-byte"): "registration-type-and-ngksi",
+    ("Registration Request", "mobile_identity_length", "replace-word-be"): "mobile-identity-length",
+    ("Registration Request", "mobile_identity_value", "replace-tail-byte"): "mobile-identity-invalid-bcd-tail",
+    ("Identity Response", "message_type", "replace-byte"): IDENTITY_RESPONSE_MESSAGE_TYPE_MUTATION,
+    ("Identity Response", "security_header", "replace-byte"): IDENTITY_RESPONSE_SECURITY_HEADER_MUTATION,
+    ("Identity Response", "identity_payload", "replace-tail-byte"): IDENTITY_RESPONSE_INVALID_BCD_MUTATION,
+    ("Identity Response", "identity_payload", "replace-first-byte"): IDENTITY_RESPONSE_UNSUPPORTED_IDENTITY_TYPE_MUTATION,
+    ("Identity Response", "identity_payload", "truncate-payload"): IDENTITY_RESPONSE_TRUNCATE_PAYLOAD_MUTATION,
+    ("Authentication Response", "message_type", "replace-byte"): AUTHENTICATION_RESPONSE_MESSAGE_TYPE_MUTATION,
+    ("Authentication Response", "security_header", "replace-byte"): AUTHENTICATION_RESPONSE_SECURITY_HEADER_MUTATION,
+    (
+        "Authentication Response",
+        "authentication_response_parameter",
+        "zero-payload-value",
+    ): AUTHENTICATION_RESPONSE_ZERO_RESPONSE_VALUE_MUTATION,
+    (
+        "Authentication Response",
+        "authentication_response_parameter",
+        "truncate-payload",
+    ): AUTHENTICATION_RESPONSE_TRUNCATE_PARAMETER_MUTATION,
+    (
+        "Authentication Response",
+        "authentication_response_parameter",
+        "set-leading-length-byte",
+    ): AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION,
+    (
+        "Authentication Response",
+        "authentication_response_parameter",
+        "append-bytes",
+    ): AUTHENTICATION_RESPONSE_APPEND_BYTES_MUTATION,
+    (
+        "Authentication Response",
+        "authentication_response_parameter",
+        "increment-leading-length-byte",
+    ): AUTHENTICATION_RESPONSE_INCREMENT_PARAMETER_LENGTH_MUTATION,
+    ("Security Mode Complete", "message_type", "replace-byte"): SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION,
+    (
+        "Security Mode Complete",
+        "protected_security_header",
+        "replace-byte",
+    ): SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION,
 }
 
 
@@ -234,6 +298,34 @@ _EXECUTION_BRIDGES: tuple[NasExecutionBridge, ...] = _build_header_mutation_brid
         execution_mode="proxy",
         operator_pattern=r"^oversized length$",
     ),
+    NasExecutionBridge(
+        message_name="Security Mode Complete",
+        family_name="wrong-state delivery",
+        proxy_mutation=SECURITY_MODE_COMPLETE_WRONG_STATE_INITIAL_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"^send as first nas message$",
+    ),
+    NasExecutionBridge(
+        message_name="Security Mode Complete",
+        family_name="wrong-state delivery",
+        proxy_mutation=SECURITY_MODE_COMPLETE_WRONG_STATE_AUTH_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"^send before security mode command$",
+    ),
+    NasExecutionBridge(
+        message_name="PDU Session Establishment Request",
+        family_name="wrong-state delivery",
+        proxy_mutation=PDU_SESSION_WRONG_STATE_INITIAL_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"^send before registration completes$",
+    ),
+    NasExecutionBridge(
+        message_name="PDU Session Establishment Request",
+        family_name="wrong-state delivery",
+        proxy_mutation=PDU_SESSION_WRONG_STATE_AUTH_MUTATION,
+        execution_mode="proxy",
+        operator_pattern=r"^send without valid session context$",
+    ),
 )
 
 
@@ -246,6 +338,27 @@ def _matching_bridge(message_name: str, family_name: str, operator: str) -> NasE
         ):
             return bridge
     return None
+
+
+def _live_proxy_execution_for_plain_plan(
+    plan: NasMutationPlan,
+) -> tuple[str, str | None] | None:
+    proxy_mutation = _LIVE_PLAIN_FIELD_PROXY_MUTATIONS.get(
+        (plan.selector.message_name, plan.field_name, plan.action)
+    )
+    if proxy_mutation is None:
+        return None
+    if proxy_mutation in {
+        IDENTITY_RESPONSE_TRUNCATE_PAYLOAD_MUTATION,
+        IDENTITY_RESPONSE_INVALID_BCD_MUTATION,
+        IDENTITY_RESPONSE_UNSUPPORTED_IDENTITY_TYPE_MUTATION,
+        AUTHENTICATION_RESPONSE_ZERO_RESPONSE_VALUE_MUTATION,
+        AUTHENTICATION_RESPONSE_TRUNCATE_PARAMETER_MUTATION,
+        AUTHENTICATION_RESPONSE_APPEND_BYTES_MUTATION,
+        AUTHENTICATION_RESPONSE_INCREMENT_PARAMETER_LENGTH_MUTATION,
+    }:
+        return (proxy_mutation, None)
+    return (proxy_mutation, plan.value)
 
 
 def _live_nested_optional_ie_value(
@@ -368,6 +481,17 @@ def resolve_operator_execution(
         operator=operator,
     )
     if plain_plan is not None:
+        live_proxy_execution = _live_proxy_execution_for_plain_plan(plain_plan)
+        if live_proxy_execution is not None:
+            proxy_mutation, proxy_value = live_proxy_execution
+            if proxy_mutation == AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION:
+                proxy_value = proxy_value or AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_DEFAULT
+            return (
+                True,
+                "proxy",
+                proxy_mutation,
+                proxy_value,
+            )
         return (
             True,
             "plain-simulation",
@@ -422,6 +546,12 @@ def observation_runtime_key(
 
 def render_operator_for_value(base_operator: str, proxy_mutation: str, value: str | None) -> str:
     if value is None:
+        if proxy_mutation == IDENTITY_RESPONSE_INVALID_BCD_MUTATION:
+            return "invalid BCD"
+        if proxy_mutation == IDENTITY_RESPONSE_UNSUPPORTED_IDENTITY_TYPE_MUTATION:
+            return "unsupported identity type"
+        if proxy_mutation == IDENTITY_RESPONSE_TRUNCATE_PAYLOAD_MUTATION:
+            return "truncated identity"
         return base_operator
     if proxy_mutation in _MESSAGE_TYPE_OPERATOR_CODES:
         return f"replace {_MESSAGE_TYPE_OPERATOR_CODES[proxy_mutation]} with {value}"
@@ -437,19 +567,44 @@ def render_operator_for_value(base_operator: str, proxy_mutation: str, value: st
 
 
 def render_proxy_command_flag(proxy_mutation: str, value: str | None) -> str:
+    if proxy_mutation == IDENTITY_RESPONSE_INVALID_BCD_MUTATION:
+        return " --mutate-identity-response-invalid-bcd"
+    if proxy_mutation == IDENTITY_RESPONSE_UNSUPPORTED_IDENTITY_TYPE_MUTATION:
+        return " --mutate-identity-response-unsupported-identity-type"
+    if proxy_mutation == IDENTITY_RESPONSE_TRUNCATE_PAYLOAD_MUTATION:
+        return " --mutate-identity-response-truncate-payload"
+    if proxy_mutation == "mobile-identity-invalid-bcd-tail":
+        return f" --mutate-mobile-identity-tail-bcd {shlex.quote(value or '')}"
     if proxy_mutation == "mobile-identity-toggle-type-bits":
         return " --mutate-mobile-identity-type-bits"
     if proxy_mutation == AUTHENTICATION_RESPONSE_ZERO_RESPONSE_VALUE_MUTATION:
         return " --mutate-authentication-response-zero-response-value"
+    if proxy_mutation == AUTHENTICATION_RESPONSE_TRUNCATE_PARAMETER_MUTATION:
+        return " --mutate-authentication-response-truncate-parameter"
+    if proxy_mutation == AUTHENTICATION_RESPONSE_APPEND_BYTES_MUTATION:
+        return " --mutate-authentication-response-append-bytes"
+    if proxy_mutation == AUTHENTICATION_RESPONSE_INCREMENT_PARAMETER_LENGTH_MUTATION:
+        return " --mutate-authentication-response-increment-parameter-length"
     if proxy_mutation == AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_MUTATION:
         return (
             " --mutate-authentication-response-parameter-length "
-            f"{value or AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_DEFAULT}"
+            f"{shlex.quote(value or AUTHENTICATION_RESPONSE_PARAMETER_LENGTH_DEFAULT)}"
         )
     if proxy_mutation == SECURITY_MODE_COMPLETE_MESSAGE_TYPE_MUTATION:
-        return f" --mutate-security-mode-complete-msgtype {value}"
+        return f" --mutate-security-mode-complete-msgtype {shlex.quote(value or '')}"
     if proxy_mutation == SECURITY_MODE_COMPLETE_SECURITY_HEADER_MUTATION:
-        return f" --mutate-security-mode-complete-security-header {value}"
+        return (
+            " --mutate-security-mode-complete-security-header "
+            f"{shlex.quote(value or '')}"
+        )
+    if proxy_mutation == SECURITY_MODE_COMPLETE_WRONG_STATE_INITIAL_MUTATION:
+        return " --mutate-initial-nas-msgtype 0x5e"
+    if proxy_mutation == SECURITY_MODE_COMPLETE_WRONG_STATE_AUTH_MUTATION:
+        return " --mutate-authentication-response-msgtype 0x5e"
+    if proxy_mutation == PDU_SESSION_WRONG_STATE_INITIAL_MUTATION:
+        return " --mutate-initial-nas-msgtype 0x67"
+    if proxy_mutation == PDU_SESSION_WRONG_STATE_AUTH_MUTATION:
+        return " --mutate-authentication-response-msgtype 0x67"
     if proxy_mutation == LIVE_NESTED_OPTIONAL_IE_MUTATION:
         plan = deserialize_mutation_plan_value(
             value,
@@ -460,17 +615,17 @@ def render_proxy_command_flag(proxy_mutation: str, value: str | None) -> str:
             include_field=True,
             include_selector=True,
         )
-        return f" --mutate-nested-optional-ie {normalized_value}"
+        return f" --mutate-nested-optional-ie {shlex.quote(normalized_value)}"
     if proxy_mutation == "nested-requested-nssai-omit":
         return " --mutate-nested-requested-nssai-omit"
     if proxy_mutation == "nested-requested-nssai-bad-length":
-        return f" --mutate-nested-requested-nssai-bad-length {value or '0xff'}"
+        return f" --mutate-nested-requested-nssai-bad-length {shlex.quote(value or '0xff')}"
     if proxy_mutation == "nested-fivegmm-capability-omit":
         return " --mutate-nested-fivegmm-capability-omit"
     if proxy_mutation == "nested-fivegmm-capability-bad-length":
-        return f" --mutate-nested-fivegmm-capability-bad-length {value or '0xff'}"
+        return f" --mutate-nested-fivegmm-capability-bad-length {shlex.quote(value or '0xff')}"
     if value is None:
         return ""
     if proxy_mutation in _PROXY_MUTATION_FLAGS:
-        return f" {_PROXY_MUTATION_FLAGS[proxy_mutation]} {value}"
+        return f" {_PROXY_MUTATION_FLAGS[proxy_mutation]} {shlex.quote(value)}"
     return ""

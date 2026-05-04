@@ -35,9 +35,15 @@ struct ProxyConfig
     bool mutate_registration_type_and_ngksi;
     bool mutate_initial_nas_security_header;
     bool mutate_identity_response_security_header;
+    bool mutate_identity_response_truncate_payload;
+    bool mutate_identity_response_invalid_bcd;
+    bool mutate_identity_response_unsupported_identity_type;
     bool mutate_authentication_response_security_header;
     bool mutate_security_mode_complete_security_header;
     bool mutate_authentication_response_zero_response_value;
+    bool mutate_authentication_response_truncate_parameter;
+    bool mutate_authentication_response_append_bytes;
+    bool mutate_authentication_response_increment_parameter_length;
     bool mutate_authentication_response_parameter_length;
     bool mutate_mobile_identity_length;
     bool mutate_mobile_identity_tail_bcd;
@@ -49,6 +55,7 @@ struct ProxyConfig
     bool mutate_nested_optional_ie_duplicate_payload_entries;
     bool mutate_nested_optional_ie_set_reserved_bits;
     bool mutate_nested_optional_ie_truncate_payload;
+    bool mutate_nested_optional_ie_replace_first_payload_byte;
     uint8_t initial_nas_target_msgtype;
     uint8_t identity_response_target_msgtype;
     uint8_t authentication_response_target_msgtype;
@@ -62,8 +69,10 @@ struct ProxyConfig
     uint8_t mobile_identity_tail_bcd_target;
     uint8_t nested_optional_ie_tag;
     uint8_t nested_optional_ie_bad_length_target;
+    uint8_t nested_optional_ie_replace_first_payload_byte_target;
     const char *nested_optional_ie_name;
     bool nested_optional_ie_require_security_mode_complete;
+    bool nested_optional_ie_target_pdu_session;
     uint16_t mobile_identity_length_target;
     int preview_bytes;
 };
@@ -105,9 +114,15 @@ static void usage(const char *program)
             "          [--mutate-registration-type-and-ngksi BYTE]\n"
             "          [--mutate-initial-nas-security-header BYTE]\n"
             "          [--mutate-identity-response-security-header BYTE]\n"
+            "          [--mutate-identity-response-truncate-payload]\n"
+            "          [--mutate-identity-response-invalid-bcd]\n"
+            "          [--mutate-identity-response-unsupported-identity-type]\n"
             "          [--mutate-authentication-response-security-header BYTE]\n"
             "          [--mutate-security-mode-complete-security-header BYTE]\n"
             "          [--mutate-authentication-response-zero-response-value]\n"
+            "          [--mutate-authentication-response-truncate-parameter]\n"
+            "          [--mutate-authentication-response-append-bytes]\n"
+            "          [--mutate-authentication-response-increment-parameter-length]\n"
             "          [--mutate-authentication-response-parameter-length BYTE]\n"
             "          [--mutate-mobile-identity-length WORD]\n"
             "          [--mutate-mobile-identity-tail-bcd BYTE]\n"
@@ -134,12 +149,23 @@ static void usage(const char *program)
             "as 0x01, 0x02, 0x03, 0x04, or 0x0f, or\n"
             "replace the Identity Response plain security header 0x00 -> another value such\n"
             "as 0x01, 0x02, 0x03, or 0x04, or\n"
+            "truncate the Identity Response payload by removing one trailing octet, or\n"
+            "patch the last Identity Response payload octet -> 0x2a to inject an invalid BCD\n"
+            "style value, or\n"
+            "patch the first Identity Response payload octet -> 0x06 to make the identity type\n"
+            "unsupported, or\n"
             "replace the Authentication Response plain security header 0x00 -> another value such\n"
             "as 0x01, 0x02, 0x03, or 0x04, or\n"
             "replace the Security Mode Complete outer protected security header 0x04 -> another\n"
             "value such as 0x00, 0x01, or 0x02, or\n"
             "zero the Authentication Response parameter value bytes while preserving the outer\n"
             "plain NAS shell and parameter length, or\n"
+            "truncate the Authentication Response parameter by removing one payload byte and\n"
+            "decrementing its length, or\n"
+            "append extra trailing bytes after the Authentication Response parameter payload\n"
+            "while leaving its length metadata unchanged, or\n"
+            "increment the Authentication Response parameter length byte while preserving\n"
+            "payload bytes, or\n"
             "replace the Authentication Response parameter length byte 0x10 -> another value\n"
             "such as 0xff while preserving the payload bytes, or\n"
             "corrupt the Registration Request mobile-identity length 0x000d -> another value\n"
@@ -161,6 +187,9 @@ static void usage(const char *program)
             "  field:fivegmm_capability,action:bad-length,length:0xff\n"
             "  field:fivegmm_capability,action:set-reserved-bits\n"
             "  field:fivegmm_capability,action:truncate-payload\n"
+            "  container:nested-5gsm-message,message:PDU Session Establishment Request,field:session_type,action:replace-first-payload-byte,value:0x00\n"
+            "  container:nested-5gsm-message,message:PDU Session Establishment Request,field:s_nssai,action:replace-first-payload-byte,value:0xff\n"
+            "  container:nested-5gsm-message,message:PDU Session Establishment Request,field:dnn,action:truncate-payload\n"
             "\n"
             "Defaults:\n"
             "  --listen-ip   %s\n"
@@ -265,20 +294,61 @@ static void configure_nested_optional_ie_field(struct ProxyConfig *cfg, const ch
         return;
     }
 
+    if (strcmp(field_name, "session_type") == 0)
+    {
+        cfg->nested_optional_ie_tag = 0x12;
+        cfg->nested_optional_ie_name = "Session type";
+        return;
+    }
+
+    if (strcmp(field_name, "s_nssai") == 0)
+    {
+        cfg->nested_optional_ie_tag = 0x22;
+        cfg->nested_optional_ie_name = "S-NSSAI";
+        return;
+    }
+
+    if (strcmp(field_name, "dnn") == 0)
+    {
+        cfg->nested_optional_ie_tag = 0x25;
+        cfg->nested_optional_ie_name = "DNN";
+        return;
+    }
+
     fprintf(stderr, "Unsupported nested optional IE field '%s'\n", field_name);
     exit(2);
 }
 
+static bool field_targets_pdu_session(const char *field_name)
+{
+    return strcmp(field_name, "session_type") == 0 ||
+           strcmp(field_name, "s_nssai") == 0 ||
+           strcmp(field_name, "dnn") == 0;
+}
+
+static const char *nested_optional_ie_scope_label(const struct ProxyConfig *cfg)
+{
+    if (cfg->nested_optional_ie_target_pdu_session)
+        return "later protected UL NAS Transport PDU Session Establishment Request packets";
+    if (cfg->nested_optional_ie_require_security_mode_complete)
+        return "later nested Registration Request packets inside Security Mode Complete";
+    return "later nested Registration Request packets";
+}
+
 static void parse_nested_optional_ie_spec(struct ProxyConfig *cfg, const char *spec)
 {
+    char container_type[64];
     char field_name[64];
     char action[64];
     char length_value[64];
     char message_name[64];
+    char payload_value[64];
+    bool has_container = read_spec_token(spec, "container", container_type, sizeof(container_type));
     bool has_field = read_spec_token(spec, "field", field_name, sizeof(field_name));
     bool has_action = read_spec_token(spec, "action", action, sizeof(action));
     bool has_length = read_spec_token(spec, "length", length_value, sizeof(length_value));
     bool has_message = read_spec_token(spec, "message", message_name, sizeof(message_name));
+    bool has_value = read_spec_token(spec, "value", payload_value, sizeof(payload_value));
 
     if (!has_field || !has_action)
     {
@@ -290,15 +360,44 @@ static void parse_nested_optional_ie_spec(struct ProxyConfig *cfg, const char *s
 
     configure_nested_optional_ie_field(cfg, field_name);
 
+    if (has_container)
+    {
+        if (strcmp(container_type, "nested-5gsm-message") == 0)
+        {
+            cfg->nested_optional_ie_target_pdu_session = true;
+            cfg->nested_optional_ie_require_security_mode_complete = false;
+        }
+        else if (strcmp(container_type, "nested-nas-message") == 0 ||
+                 strcmp(container_type, "nested-registration-request") == 0)
+        {
+            cfg->nested_optional_ie_target_pdu_session = false;
+        }
+        else
+        {
+            fprintf(stderr,
+                    "Unsupported nested optional IE container '%s' in spec '%s'\n",
+                    container_type,
+                    spec);
+            exit(2);
+        }
+    }
+
     if (has_message)
     {
         if (strcmp(message_name, "Security Mode Complete") == 0)
         {
             cfg->nested_optional_ie_require_security_mode_complete = true;
+            cfg->nested_optional_ie_target_pdu_session = false;
         }
         else if (strcmp(message_name, "Registration Request") == 0)
         {
             cfg->nested_optional_ie_require_security_mode_complete = false;
+            cfg->nested_optional_ie_target_pdu_session = false;
+        }
+        else if (strcmp(message_name, "PDU Session Establishment Request") == 0)
+        {
+            cfg->nested_optional_ie_require_security_mode_complete = false;
+            cfg->nested_optional_ie_target_pdu_session = true;
         }
         else
         {
@@ -308,6 +407,15 @@ static void parse_nested_optional_ie_spec(struct ProxyConfig *cfg, const char *s
                     spec);
             exit(2);
         }
+    }
+
+    if (cfg->nested_optional_ie_target_pdu_session != field_targets_pdu_session(field_name))
+    {
+        fprintf(stderr,
+                "Field '%s' does not match the selected nested optional IE target in spec '%s'\n",
+                field_name,
+                spec);
+        exit(2);
     }
 
     if (strcmp(action, "omit") == 0)
@@ -372,14 +480,22 @@ static void parse_nested_optional_ie_spec(struct ProxyConfig *cfg, const char *s
 
     if (strcmp(action, "truncate-payload") == 0)
     {
-        if (cfg->nested_optional_ie_tag != 0x10)
+        cfg->mutate_nested_optional_ie_truncate_payload = true;
+        return;
+    }
+
+    if (strcmp(action, "replace-first-payload-byte") == 0)
+    {
+        if (!has_value)
         {
             fprintf(stderr,
-                    "Action 'truncate-payload' is only supported for fivegmm_capability, not '%s'\n",
-                    field_name);
+                    "Action 'replace-first-payload-byte' requires value:<byte> in spec '%s'\n",
+                    spec);
             exit(2);
         }
-        cfg->mutate_nested_optional_ie_truncate_payload = true;
+        cfg->mutate_nested_optional_ie_replace_first_payload_byte = true;
+        cfg->nested_optional_ie_replace_first_payload_byte_target =
+            parse_byte_arg("--mutate-nested-optional-ie value", payload_value);
         return;
     }
 
@@ -405,6 +521,9 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         .mutate_registration_type_and_ngksi = false,
         .mutate_initial_nas_security_header = false,
         .mutate_identity_response_security_header = false,
+        .mutate_identity_response_truncate_payload = false,
+        .mutate_identity_response_invalid_bcd = false,
+        .mutate_identity_response_unsupported_identity_type = false,
         .mutate_authentication_response_security_header = false,
         .mutate_security_mode_complete_security_header = false,
         .mutate_authentication_response_zero_response_value = false,
@@ -419,6 +538,7 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         .mutate_nested_optional_ie_duplicate_payload_entries = false,
         .mutate_nested_optional_ie_set_reserved_bits = false,
         .mutate_nested_optional_ie_truncate_payload = false,
+        .mutate_nested_optional_ie_replace_first_payload_byte = false,
         .initial_nas_target_msgtype = 0x5c,
         .identity_response_target_msgtype = 0x41,
         .authentication_response_target_msgtype = 0x41,
@@ -432,8 +552,10 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         .mobile_identity_tail_bcd_target = 0x2a,
         .nested_optional_ie_tag = 0x00,
         .nested_optional_ie_bad_length_target = 0xff,
+        .nested_optional_ie_replace_first_payload_byte_target = 0xff,
         .nested_optional_ie_name = "nested optional IE",
         .nested_optional_ie_require_security_mode_complete = false,
+        .nested_optional_ie_target_pdu_session = false,
         .mobile_identity_length_target = 0x000d,
         .preview_bytes = 12,
     };
@@ -511,6 +633,18 @@ static struct ProxyConfig parse_args(int argc, char **argv)
             cfg.identity_response_target_security_header =
                 parse_byte_arg("--mutate-identity-response-security-header", argv[++i]);
         }
+        else if (strcmp(argv[i], "--mutate-identity-response-truncate-payload") == 0)
+        {
+            cfg.mutate_identity_response_truncate_payload = true;
+        }
+        else if (strcmp(argv[i], "--mutate-identity-response-invalid-bcd") == 0)
+        {
+            cfg.mutate_identity_response_invalid_bcd = true;
+        }
+        else if (strcmp(argv[i], "--mutate-identity-response-unsupported-identity-type") == 0)
+        {
+            cfg.mutate_identity_response_unsupported_identity_type = true;
+        }
         else if (strcmp(argv[i], "--mutate-authentication-response-security-header") == 0 && i + 1 < argc)
         {
             cfg.mutate_authentication_response_security_header = true;
@@ -526,6 +660,18 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         else if (strcmp(argv[i], "--mutate-authentication-response-zero-response-value") == 0)
         {
             cfg.mutate_authentication_response_zero_response_value = true;
+        }
+        else if (strcmp(argv[i], "--mutate-authentication-response-truncate-parameter") == 0)
+        {
+            cfg.mutate_authentication_response_truncate_parameter = true;
+        }
+        else if (strcmp(argv[i], "--mutate-authentication-response-append-bytes") == 0)
+        {
+            cfg.mutate_authentication_response_append_bytes = true;
+        }
+        else if (strcmp(argv[i], "--mutate-authentication-response-increment-parameter-length") == 0)
+        {
+            cfg.mutate_authentication_response_increment_parameter_length = true;
         }
         else if (strcmp(argv[i], "--mutate-authentication-response-parameter-length") == 0 && i + 1 < argc)
         {
@@ -604,11 +750,23 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         mutation_modes++;
     if (cfg.mutate_identity_response_security_header)
         mutation_modes++;
+    if (cfg.mutate_identity_response_truncate_payload)
+        mutation_modes++;
+    if (cfg.mutate_identity_response_invalid_bcd)
+        mutation_modes++;
+    if (cfg.mutate_identity_response_unsupported_identity_type)
+        mutation_modes++;
     if (cfg.mutate_authentication_response_security_header)
         mutation_modes++;
     if (cfg.mutate_security_mode_complete_security_header)
         mutation_modes++;
     if (cfg.mutate_authentication_response_zero_response_value)
+        mutation_modes++;
+    if (cfg.mutate_authentication_response_truncate_parameter)
+        mutation_modes++;
+    if (cfg.mutate_authentication_response_append_bytes)
+        mutation_modes++;
+    if (cfg.mutate_authentication_response_increment_parameter_length)
         mutation_modes++;
     if (cfg.mutate_authentication_response_parameter_length)
         mutation_modes++;
@@ -632,11 +790,13 @@ static struct ProxyConfig parse_args(int argc, char **argv)
         mutation_modes++;
     if (cfg.mutate_nested_optional_ie_truncate_payload)
         mutation_modes++;
+    if (cfg.mutate_nested_optional_ie_replace_first_payload_byte)
+        mutation_modes++;
 
     if (mutation_modes > 1)
     {
         fprintf(stderr,
-                "Choose only one mutation mode at a time: message-type, identity-response-message-type, authentication-response-message-type, security-mode-complete-message-type, registration-type-and-ngksi, security-header, identity-response-security-header, authentication-response-security-header, security-mode-complete-security-header, authentication-response-zero-response-value, authentication-response-parameter-length, mobile-identity-length, mobile-identity-tail-bcd, mobile-identity-type-bits, mutate-nested-optional-ie, nested-requested-nssai-omit, nested-requested-nssai-bad-length, nested-fivegmm-capability-omit, or nested-fivegmm-capability-bad-length.\n");
+                "Choose only one mutation mode at a time: message-type, identity-response-message-type, authentication-response-message-type, security-mode-complete-message-type, registration-type-and-ngksi, security-header, identity-response-security-header, identity-response-truncate-payload, identity-response-invalid-bcd, identity-response-unsupported-identity-type, authentication-response-security-header, security-mode-complete-security-header, authentication-response-zero-response-value, authentication-response-truncate-parameter, authentication-response-append-bytes, authentication-response-increment-parameter-length, authentication-response-parameter-length, mobile-identity-length, mobile-identity-tail-bcd, mobile-identity-type-bits, mutate-nested-optional-ie, nested-requested-nssai-omit, nested-requested-nssai-bad-length, nested-fivegmm-capability-omit, nested-fivegmm-capability-bad-length, or replace-first-payload-byte via mutate-nested-optional-ie.\n");
         exit(2);
     }
 
@@ -803,6 +963,36 @@ static bool duplicate_octet_span(
     return true;
 }
 
+static bool insert_zero_octet_span(
+    unsigned char *buffer,
+    ssize_t *n_inout,
+    ssize_t insert_offset,
+    ssize_t length)
+{
+    if (insert_offset < 0 || length < 0)
+    {
+        fprintf(stderr, "[proxy] insert span uses a negative offset or length\n");
+        return false;
+    }
+    if (insert_offset > *n_inout)
+    {
+        fprintf(stderr, "[proxy] insert span exceeds the current packet bounds\n");
+        return false;
+    }
+    if (*n_inout + length > BUFFER_SIZE)
+    {
+        fprintf(stderr, "[proxy] insert span would exceed the proxy buffer capacity\n");
+        return false;
+    }
+
+    memmove(buffer + insert_offset + length,
+            buffer + insert_offset,
+            (size_t)(*n_inout - insert_offset));
+    memset(buffer + insert_offset, 0x00, (size_t)length);
+    *n_inout += length;
+    return true;
+}
+
 static bool find_plain_nas_message(
     const unsigned char *buffer,
     ssize_t n,
@@ -882,6 +1072,9 @@ static bool maybe_patch_selected_nas(
         !cfg->mutate_registration_type_and_ngksi &&
         !cfg->mutate_initial_nas_security_header &&
         !cfg->mutate_identity_response_security_header &&
+        !cfg->mutate_identity_response_truncate_payload &&
+        !cfg->mutate_identity_response_invalid_bcd &&
+        !cfg->mutate_identity_response_unsupported_identity_type &&
         !cfg->mutate_authentication_response_security_header &&
         !cfg->mutate_security_mode_complete_security_header &&
         !cfg->mutate_authentication_response_zero_response_value &&
@@ -895,7 +1088,8 @@ static bool maybe_patch_selected_nas(
         !cfg->mutate_nested_optional_ie_unsupported_sst_sd &&
         !cfg->mutate_nested_optional_ie_duplicate_payload_entries &&
         !cfg->mutate_nested_optional_ie_set_reserved_bits &&
-        !cfg->mutate_nested_optional_ie_truncate_payload)
+        !cfg->mutate_nested_optional_ie_truncate_payload &&
+        !cfg->mutate_nested_optional_ie_replace_first_payload_byte)
         return false;
     if (runtime->selected_nas_mutation_applied)
         return false;
@@ -994,6 +1188,67 @@ static bool maybe_patch_selected_nas(
         }
     }
 
+    if (cfg->mutate_identity_response_truncate_payload)
+    {
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x5c, &match))
+        {
+            ssize_t payload_offset = match.start_offset + 3;
+            ssize_t payload_length = n - payload_offset;
+            if (payload_length < 1)
+                return false;
+
+            fprintf(stderr,
+                    "[proxy] truncating Identity Response payload at offset=%zd length=%zd -> %zd\n",
+                    payload_offset + payload_length - 1,
+                    payload_length,
+                    payload_length - 1);
+            remove_octet_span(buffer, n_inout, payload_offset + payload_length - 1, 1);
+            runtime->selected_nas_mutation_applied = true;
+            return true;
+        }
+    }
+
+    if (cfg->mutate_identity_response_invalid_bcd)
+    {
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x5c, &match))
+        {
+            ssize_t payload_offset = match.start_offset + 3;
+            ssize_t payload_length = n - payload_offset;
+            if (payload_length < 1)
+                return false;
+
+            fprintf(stderr,
+                    "[proxy] corrupting Identity Response payload tail octet at offset=%zd 0x%02x -> 0x2a\n",
+                    payload_offset + payload_length - 1,
+                    buffer[payload_offset + payload_length - 1]);
+            buffer[payload_offset + payload_length - 1] = 0x2a;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
+        }
+    }
+
+    if (cfg->mutate_identity_response_unsupported_identity_type)
+    {
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x5c, &match))
+        {
+            ssize_t payload_offset = match.start_offset + 3;
+            ssize_t payload_length = n - payload_offset;
+            if (payload_length < 1)
+                return false;
+
+            fprintf(stderr,
+                    "[proxy] patching Identity Response first payload octet at offset=%zd 0x%02x -> 0x06\n",
+                    payload_offset,
+                    buffer[payload_offset]);
+            buffer[payload_offset] = 0x06;
+            runtime->selected_nas_mutation_applied = true;
+            return true;
+        }
+    }
+
     if (cfg->mutate_authentication_response_security_header)
     {
         struct PlainNasMatch match;
@@ -1043,6 +1298,81 @@ static bool maybe_patch_selected_nas(
                         value_offset,
                         value_length);
                 memset(buffer + value_offset, 0x00, value_length);
+                runtime->selected_nas_mutation_applied = true;
+                return true;
+            }
+        }
+    }
+
+    if (cfg->mutate_authentication_response_truncate_parameter)
+    {
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x57, &match))
+        {
+            if (match.start_offset + 5 <= n && buffer[match.start_offset + 3] == 0x2d)
+            {
+                uint8_t value_length = buffer[match.start_offset + 4];
+                ssize_t value_offset = match.start_offset + 5;
+                if (value_length == 0)
+                    return false;
+                if (value_offset + value_length > n)
+                    return false;
+
+                fprintf(stderr,
+                        "[proxy] truncating Authentication Response parameter at offset=%zd length 0x%02x -> 0x%02x\n",
+                        value_offset + value_length - 1,
+                        value_length,
+                        (unsigned int)(value_length - 1));
+                remove_octet_span(buffer, n_inout, value_offset + value_length - 1, 1);
+                buffer[match.start_offset + 4] = (unsigned char)(value_length - 1);
+                runtime->selected_nas_mutation_applied = true;
+                return true;
+            }
+        }
+    }
+
+    if (cfg->mutate_authentication_response_append_bytes)
+    {
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x57, &match))
+        {
+            if (match.start_offset + 5 <= n && buffer[match.start_offset + 3] == 0x2d)
+            {
+                uint8_t value_length = buffer[match.start_offset + 4];
+                ssize_t value_offset = match.start_offset + 5;
+                ssize_t append_offset = value_offset + value_length;
+                if (append_offset > n)
+                    return false;
+
+                fprintf(stderr,
+                        "[proxy] appending trailing bytes after Authentication Response parameter at offset=%zd while preserving length 0x%02x\n",
+                        append_offset,
+                        value_length);
+                if (!insert_zero_octet_span(buffer, n_inout, append_offset, 2))
+                    return false;
+                runtime->selected_nas_mutation_applied = true;
+                return true;
+            }
+        }
+    }
+
+    if (cfg->mutate_authentication_response_increment_parameter_length)
+    {
+        struct PlainNasMatch match;
+        if (find_plain_nas_message(buffer, n, 0x00, 0x57, &match))
+        {
+            if (match.start_offset + 5 <= n && buffer[match.start_offset + 3] == 0x2d)
+            {
+                uint8_t value_length = buffer[match.start_offset + 4];
+                if (value_length == 0xff)
+                    return false;
+
+                fprintf(stderr,
+                        "[proxy] incrementing Authentication Response parameter length at offset=%zd 0x%02x -> 0x%02x while preserving payload bytes\n",
+                        match.start_offset + 4,
+                        value_length,
+                        (unsigned int)(value_length + 1));
+                buffer[match.start_offset + 4] = (unsigned char)(value_length + 1);
                 runtime->selected_nas_mutation_applied = true;
                 return true;
             }
@@ -1153,173 +1483,218 @@ static bool maybe_patch_selected_nas(
         cfg->mutate_nested_optional_ie_unsupported_sst_sd ||
         cfg->mutate_nested_optional_ie_duplicate_payload_entries ||
         cfg->mutate_nested_optional_ie_set_reserved_bits ||
-        cfg->mutate_nested_optional_ie_truncate_payload)
+        cfg->mutate_nested_optional_ie_truncate_payload ||
+        cfg->mutate_nested_optional_ie_replace_first_payload_byte)
     {
         if (n < 8)
             return false;
 
-        ssize_t search_start = 1;
-        if (cfg->nested_optional_ie_require_security_mode_complete)
+        ssize_t start = -1;
+        ssize_t tlv_offset = -1;
+        if (cfg->nested_optional_ie_target_pdu_session)
         {
             struct ProtectedNasMatch carrier_match;
-            if (!find_protected_nas_message(buffer, n, 0x04, 0x00, 0x5e, &carrier_match))
+            if (!find_protected_nas_message(buffer, n, -1, 0x00, 0x67, &carrier_match))
                 return false;
-            search_start = carrier_match.inner_message_type_offset + 1;
+            start = carrier_match.start_offset + 7;
+            if (start + 6 > n)
+                return false;
+
+            ssize_t payload_container_length =
+                ((ssize_t)buffer[start + 4] << 8) | buffer[start + 5];
+            tlv_offset = start + 6 + payload_container_length;
+            if (payload_container_length < 0 || tlv_offset > n)
+                return false;
+        }
+        else
+        {
+            ssize_t search_start = 1;
+            if (cfg->nested_optional_ie_require_security_mode_complete)
+            {
+                struct ProtectedNasMatch carrier_match;
+                if (!find_protected_nas_message(buffer, n, 0x04, 0x00, 0x5e, &carrier_match))
+                    return false;
+                search_start = carrier_match.inner_message_type_offset + 1;
+            }
+
+            for (ssize_t candidate_start = search_start; candidate_start <= n - 6; candidate_start++)
+            {
+                if (buffer[candidate_start] != 0x7e || buffer[candidate_start + 1] != 0x00 ||
+                    buffer[candidate_start + 2] != 0x41 || buffer[candidate_start + 3] != 0x79)
+                    continue;
+
+                ssize_t mobile_identity_length =
+                    ((ssize_t)buffer[candidate_start + 4] << 8) | buffer[candidate_start + 5];
+                ssize_t candidate_tlv_offset = candidate_start + 6 + mobile_identity_length;
+                if (mobile_identity_length < 0 || candidate_tlv_offset > n)
+                    continue;
+
+                start = candidate_start;
+                tlv_offset = candidate_tlv_offset;
+                break;
+            }
+            if (start < 0 || tlv_offset < 0)
+                return false;
         }
 
-        for (ssize_t start = search_start; start <= n - 6; start++)
+        for (ssize_t pos = tlv_offset; pos <= n - 2;)
         {
-            if (buffer[start] != 0x7e || buffer[start + 1] != 0x00 || buffer[start + 2] != 0x41 ||
-                buffer[start + 3] != 0x79)
-                continue;
+            uint8_t tag = buffer[pos];
+            ssize_t value_length = buffer[pos + 1];
+            ssize_t total_length = 2 + value_length;
 
-            ssize_t mobile_identity_length = ((ssize_t)buffer[start + 4] << 8) | buffer[start + 5];
-            ssize_t tlv_offset = start + 6 + mobile_identity_length;
-            if (mobile_identity_length < 0 || tlv_offset > n)
-                continue;
+            if (pos + total_length > n)
+                break;
 
-            for (ssize_t pos = tlv_offset; pos <= n - 2;)
+            if (tag == cfg->nested_optional_ie_tag)
             {
-                uint8_t tag = buffer[pos];
-                ssize_t value_length = buffer[pos + 1];
-                ssize_t total_length = 2 + value_length;
-
-                if (pos + total_length > n)
-                    break;
-
-                if (tag == cfg->nested_optional_ie_tag)
+                if (cfg->mutate_nested_optional_ie_omit)
                 {
-                    if (cfg->mutate_nested_optional_ie_omit)
+                    fprintf(stderr,
+                            "[proxy] removing nested %s IE at outer offset=%zd container_offset=%zd total_length=%zd\n",
+                            cfg->nested_optional_ie_name,
+                            pos,
+                            start,
+                            total_length);
+                    remove_octet_span(buffer, n_inout, pos, total_length);
+                }
+                else if (cfg->mutate_nested_optional_ie_bad_length)
+                {
+                    fprintf(stderr,
+                            "[proxy] patching nested %s IE length at outer offset=%zd container_offset=%zd 0x%02x -> 0x%02x\n",
+                            cfg->nested_optional_ie_name,
+                            pos + 1,
+                            start,
+                            buffer[pos + 1],
+                            cfg->nested_optional_ie_bad_length_target);
+                    buffer[pos + 1] = cfg->nested_optional_ie_bad_length_target;
+                }
+                else if (cfg->mutate_nested_optional_ie_duplicate)
+                {
+                    fprintf(stderr,
+                            "[proxy] duplicating nested %s IE at outer offset=%zd container_offset=%zd total_length=%zd\n",
+                            cfg->nested_optional_ie_name,
+                            pos,
+                            start,
+                            total_length);
+                    if (!duplicate_octet_span(buffer, n_inout, pos, total_length, pos + total_length))
+                        return false;
+                }
+                else if (cfg->mutate_nested_optional_ie_unsupported_sst_sd)
+                {
+                    if (value_length < 2)
                     {
                         fprintf(stderr,
-                                "[proxy] removing nested %s IE at outer offset=%zd nested_rr_offset=%zd total_length=%zd\n",
+                                "[proxy] cannot patch nested %s payload into unsupported SST/SD: payload length=%zd\n",
                                 cfg->nested_optional_ie_name,
-                                pos,
-                                start,
-                                total_length);
-                        remove_octet_span(buffer, n_inout, pos, total_length);
-                    }
-                    else if (cfg->mutate_nested_optional_ie_bad_length)
-                    {
-                        fprintf(stderr,
-                                "[proxy] patching nested %s IE length at outer offset=%zd nested_rr_offset=%zd 0x%02x -> 0x%02x\n",
-                                cfg->nested_optional_ie_name,
-                                pos + 1,
-                                start,
-                                buffer[pos + 1],
-                                cfg->nested_optional_ie_bad_length_target);
-                        buffer[pos + 1] = cfg->nested_optional_ie_bad_length_target;
-                    }
-                    else if (cfg->mutate_nested_optional_ie_duplicate)
-                    {
-                        fprintf(stderr,
-                                "[proxy] duplicating nested %s IE at outer offset=%zd nested_rr_offset=%zd total_length=%zd\n",
-                                cfg->nested_optional_ie_name,
-                                pos,
-                                start,
-                                total_length);
-                        if (!duplicate_octet_span(buffer, n_inout, pos, total_length, pos + total_length))
-                            return false;
-                    }
-                    else if (cfg->mutate_nested_optional_ie_unsupported_sst_sd)
-                    {
-                        if (value_length < 2)
-                        {
-                            fprintf(stderr,
-                                    "[proxy] cannot patch nested %s payload into unsupported SST/SD: payload length=%zd\n",
-                                    cfg->nested_optional_ie_name,
-                                    value_length);
-                            return false;
-                        }
-                        fprintf(stderr,
-                                "[proxy] patching nested %s payload at outer offsets=%zd/%zd 0x%02x:0x%02x -> 0xff:0xff\n",
-                                cfg->nested_optional_ie_name,
-                                pos + 2,
-                                pos + 3,
-                                buffer[pos + 2],
-                                buffer[pos + 3]);
-                        buffer[pos + 2] = 0xff;
-                        buffer[pos + 3] = 0xff;
-                    }
-                    else if (cfg->mutate_nested_optional_ie_duplicate_payload_entries)
-                    {
-                        if (value_length < 1)
-                        {
-                            fprintf(stderr,
-                                    "[proxy] cannot duplicate nested %s payload entries because the payload is empty\n",
-                                    cfg->nested_optional_ie_name);
-                            return false;
-                        }
-                        if (value_length > 0xff - value_length)
-                        {
-                            fprintf(stderr,
-                                    "[proxy] cannot duplicate nested %s payload entries because the new length would exceed 0xff\n",
-                                    cfg->nested_optional_ie_name);
-                            return false;
-                        }
-                        fprintf(stderr,
-                                "[proxy] duplicating nested %s payload entries at outer offset=%zd nested_rr_offset=%zd length=0x%02x -> 0x%02x\n",
-                                cfg->nested_optional_ie_name,
-                                pos + 2,
-                                start,
-                                buffer[pos + 1],
-                                (unsigned int)(value_length * 2));
-                        if (!duplicate_octet_span(
-                                buffer,
-                                n_inout,
-                                pos + 2,
-                                value_length,
-                                pos + 2 + value_length))
-                            return false;
-                        buffer[pos + 1] = (unsigned char)(value_length * 2);
-                    }
-                    else if (cfg->mutate_nested_optional_ie_set_reserved_bits)
-                    {
-                        if (value_length < 1)
-                        {
-                            fprintf(stderr,
-                                    "[proxy] cannot set reserved bits for nested %s because the payload is empty\n",
-                                    cfg->nested_optional_ie_name);
-                            return false;
-                        }
-                        fprintf(stderr,
-                                "[proxy] setting reserved bits in nested %s payload at outer offset=%zd 0x%02x -> 0xff\n",
-                                cfg->nested_optional_ie_name,
-                                pos + 2,
-                                buffer[pos + 2]);
-                        buffer[pos + 2] = 0xff;
-                    }
-                    else if (cfg->mutate_nested_optional_ie_truncate_payload)
-                    {
-                        if (value_length < 1)
-                        {
-                            fprintf(stderr,
-                                    "[proxy] cannot truncate nested %s payload because it is already empty\n",
-                                    cfg->nested_optional_ie_name);
-                            return false;
-                        }
-                        fprintf(stderr,
-                                "[proxy] truncating nested %s payload at outer offset=%zd removing 0x%02x and length 0x%02x -> 0x%02x\n",
-                                cfg->nested_optional_ie_name,
-                                pos + 1 + value_length,
-                                buffer[pos + 1 + value_length],
-                                buffer[pos + 1],
-                                (unsigned int)(value_length - 1));
-                        remove_octet_span(buffer, n_inout, pos + 1 + value_length, 1);
-                        buffer[pos + 1] = (unsigned char)(value_length - 1);
-                    }
-                    else
-                    {
-                        fprintf(stderr,
-                                "[proxy] nested optional IE mutation mode was selected but no action matched\n");
+                                value_length);
                         return false;
                     }
-                    runtime->selected_nas_mutation_applied = true;
-                    return true;
+                    fprintf(stderr,
+                            "[proxy] patching nested %s payload at outer offsets=%zd/%zd 0x%02x:0x%02x -> 0xff:0xff\n",
+                            cfg->nested_optional_ie_name,
+                            pos + 2,
+                            pos + 3,
+                            buffer[pos + 2],
+                            buffer[pos + 3]);
+                    buffer[pos + 2] = 0xff;
+                    buffer[pos + 3] = 0xff;
                 }
-
-                pos += total_length;
+                else if (cfg->mutate_nested_optional_ie_duplicate_payload_entries)
+                {
+                    if (value_length < 1)
+                    {
+                        fprintf(stderr,
+                                "[proxy] cannot duplicate nested %s payload entries because the payload is empty\n",
+                                cfg->nested_optional_ie_name);
+                        return false;
+                    }
+                    if (value_length > 0xff - value_length)
+                    {
+                        fprintf(stderr,
+                                "[proxy] cannot duplicate nested %s payload entries because the new length would exceed 0xff\n",
+                                cfg->nested_optional_ie_name);
+                        return false;
+                    }
+                    fprintf(stderr,
+                            "[proxy] duplicating nested %s payload entries at outer offset=%zd container_offset=%zd length=0x%02x -> 0x%02x\n",
+                            cfg->nested_optional_ie_name,
+                            pos + 2,
+                            start,
+                            buffer[pos + 1],
+                            (unsigned int)(value_length * 2));
+                    if (!duplicate_octet_span(
+                            buffer,
+                            n_inout,
+                            pos + 2,
+                            value_length,
+                            pos + 2 + value_length))
+                        return false;
+                    buffer[pos + 1] = (unsigned char)(value_length * 2);
+                }
+                else if (cfg->mutate_nested_optional_ie_set_reserved_bits)
+                {
+                    if (value_length < 1)
+                    {
+                        fprintf(stderr,
+                                "[proxy] cannot set reserved bits for nested %s because the payload is empty\n",
+                                cfg->nested_optional_ie_name);
+                        return false;
+                    }
+                    fprintf(stderr,
+                            "[proxy] setting reserved bits in nested %s payload at outer offset=%zd 0x%02x -> 0xff\n",
+                            cfg->nested_optional_ie_name,
+                            pos + 2,
+                            buffer[pos + 2]);
+                    buffer[pos + 2] = 0xff;
+                }
+                else if (cfg->mutate_nested_optional_ie_truncate_payload)
+                {
+                    if (value_length < 1)
+                    {
+                        fprintf(stderr,
+                                "[proxy] cannot truncate nested %s payload because it is already empty\n",
+                                cfg->nested_optional_ie_name);
+                        return false;
+                    }
+                    fprintf(stderr,
+                            "[proxy] truncating nested %s payload at outer offset=%zd removing 0x%02x and length 0x%02x -> 0x%02x\n",
+                            cfg->nested_optional_ie_name,
+                            pos + 1 + value_length,
+                            buffer[pos + 1 + value_length],
+                            buffer[pos + 1],
+                            (unsigned int)(value_length - 1));
+                    remove_octet_span(buffer, n_inout, pos + 1 + value_length, 1);
+                    buffer[pos + 1] = (unsigned char)(value_length - 1);
+                }
+                else if (cfg->mutate_nested_optional_ie_replace_first_payload_byte)
+                {
+                    if (value_length < 1)
+                    {
+                        fprintf(stderr,
+                                "[proxy] cannot replace the first nested %s payload byte because the payload is empty\n",
+                                cfg->nested_optional_ie_name);
+                        return false;
+                    }
+                    fprintf(stderr,
+                            "[proxy] patching nested %s payload first byte at outer offset=%zd 0x%02x -> 0x%02x\n",
+                            cfg->nested_optional_ie_name,
+                            pos + 2,
+                            buffer[pos + 2],
+                            cfg->nested_optional_ie_replace_first_payload_byte_target);
+                    buffer[pos + 2] = cfg->nested_optional_ie_replace_first_payload_byte_target;
+                }
+                else
+                {
+                    fprintf(stderr,
+                            "[proxy] nested optional IE mutation mode was selected but no action matched\n");
+                    return false;
+                }
+                runtime->selected_nas_mutation_applied = true;
+                return true;
             }
+
+            pos += total_length;
         }
     }
 
@@ -1494,6 +1869,21 @@ int main(int argc, char **argv)
                 "[proxy] Identity Response security-header mutation enabled: 0x00 -> 0x%02x\n",
                 cfg.identity_response_target_security_header);
     }
+    if (cfg.mutate_identity_response_truncate_payload)
+    {
+        fprintf(stderr,
+                "[proxy] Identity Response payload mutation enabled: truncate payload by one byte\n");
+    }
+    if (cfg.mutate_identity_response_invalid_bcd)
+    {
+        fprintf(stderr,
+                "[proxy] Identity Response payload mutation enabled: patch tail octet -> 0x2a\n");
+    }
+    if (cfg.mutate_identity_response_unsupported_identity_type)
+    {
+        fprintf(stderr,
+                "[proxy] Identity Response payload mutation enabled: patch first payload octet -> 0x06\n");
+    }
     if (cfg.mutate_authentication_response_security_header)
     {
         fprintf(stderr,
@@ -1510,6 +1900,21 @@ int main(int argc, char **argv)
     {
         fprintf(stderr,
                 "[proxy] Authentication Response payload mutation enabled: zero response value bytes while preserving tag/length\n");
+    }
+    if (cfg.mutate_authentication_response_truncate_parameter)
+    {
+        fprintf(stderr,
+                "[proxy] Authentication Response payload mutation enabled: truncate parameter by one byte\n");
+    }
+    if (cfg.mutate_authentication_response_append_bytes)
+    {
+        fprintf(stderr,
+                "[proxy] Authentication Response payload mutation enabled: append trailing bytes while preserving length\n");
+    }
+    if (cfg.mutate_authentication_response_increment_parameter_length)
+    {
+        fprintf(stderr,
+                "[proxy] Authentication Response payload mutation enabled: increment parameter length while preserving payload bytes\n");
     }
     if (cfg.mutate_authentication_response_parameter_length)
     {
@@ -1537,66 +1942,60 @@ int main(int argc, char **argv)
     if (cfg.mutate_nested_optional_ie_omit)
     {
         fprintf(stderr,
-                "[proxy] nested %s omit mutation enabled for later nested Registration Request packets%s\n",
+                "[proxy] nested %s omit mutation enabled for %s\n",
                 cfg.nested_optional_ie_name,
-                cfg.nested_optional_ie_require_security_mode_complete
-                    ? " inside Security Mode Complete"
-                    : "");
+                nested_optional_ie_scope_label(&cfg));
     }
     if (cfg.mutate_nested_optional_ie_bad_length)
     {
         fprintf(stderr,
-                "[proxy] nested %s bad-length mutation enabled for later nested Registration Request packets%s: 0x%02x\n",
+                "[proxy] nested %s bad-length mutation enabled for %s: 0x%02x\n",
                 cfg.nested_optional_ie_name,
-                cfg.nested_optional_ie_require_security_mode_complete
-                    ? " inside Security Mode Complete"
-                    : "",
+                nested_optional_ie_scope_label(&cfg),
                 cfg.nested_optional_ie_bad_length_target);
     }
     if (cfg.mutate_nested_optional_ie_duplicate)
     {
         fprintf(stderr,
-                "[proxy] nested %s duplicate-IE mutation enabled for later nested Registration Request packets%s\n",
+                "[proxy] nested %s duplicate-IE mutation enabled for %s\n",
                 cfg.nested_optional_ie_name,
-                cfg.nested_optional_ie_require_security_mode_complete
-                    ? " inside Security Mode Complete"
-                    : "");
+                nested_optional_ie_scope_label(&cfg));
     }
     if (cfg.mutate_nested_optional_ie_unsupported_sst_sd)
     {
         fprintf(stderr,
-                "[proxy] nested %s unsupported-SST/SD mutation enabled for later nested Registration Request packets%s\n",
+                "[proxy] nested %s unsupported-SST/SD mutation enabled for %s\n",
                 cfg.nested_optional_ie_name,
-                cfg.nested_optional_ie_require_security_mode_complete
-                    ? " inside Security Mode Complete"
-                    : "");
+                nested_optional_ie_scope_label(&cfg));
     }
     if (cfg.mutate_nested_optional_ie_duplicate_payload_entries)
     {
         fprintf(stderr,
-                "[proxy] nested %s duplicate-payload-entries mutation enabled for later nested Registration Request packets%s\n",
+                "[proxy] nested %s duplicate-payload-entries mutation enabled for %s\n",
                 cfg.nested_optional_ie_name,
-                cfg.nested_optional_ie_require_security_mode_complete
-                    ? " inside Security Mode Complete"
-                    : "");
+                nested_optional_ie_scope_label(&cfg));
     }
     if (cfg.mutate_nested_optional_ie_set_reserved_bits)
     {
         fprintf(stderr,
-                "[proxy] nested %s set-reserved-bits mutation enabled for later nested Registration Request packets%s\n",
+                "[proxy] nested %s set-reserved-bits mutation enabled for %s\n",
                 cfg.nested_optional_ie_name,
-                cfg.nested_optional_ie_require_security_mode_complete
-                    ? " inside Security Mode Complete"
-                    : "");
+                nested_optional_ie_scope_label(&cfg));
     }
     if (cfg.mutate_nested_optional_ie_truncate_payload)
     {
         fprintf(stderr,
-                "[proxy] nested %s truncate-payload mutation enabled for later nested Registration Request packets%s\n",
+                "[proxy] nested %s truncate-payload mutation enabled for %s\n",
                 cfg.nested_optional_ie_name,
-                cfg.nested_optional_ie_require_security_mode_complete
-                    ? " inside Security Mode Complete"
-                    : "");
+                nested_optional_ie_scope_label(&cfg));
+    }
+    if (cfg.mutate_nested_optional_ie_replace_first_payload_byte)
+    {
+        fprintf(stderr,
+                "[proxy] nested %s replace-first-payload-byte mutation enabled for %s: 0x%02x\n",
+                cfg.nested_optional_ie_name,
+                nested_optional_ie_scope_label(&cfg),
+                cfg.nested_optional_ie_replace_first_payload_byte_target);
     }
 
     int listener = create_listener(&cfg);

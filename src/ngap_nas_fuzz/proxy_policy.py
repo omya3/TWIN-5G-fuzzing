@@ -225,7 +225,7 @@ def _note_builder_for_plain_plan(
 
 
 def _parse_plain_field_plan_value(plan: NasMutationPlan) -> int:
-    if plan.action in {"replace-byte", "replace-first-byte"}:
+    if plan.action in {"replace-byte", "replace-first-byte", "replace-tail-byte"}:
         max_value = 0x0F if plan.field_name == "security_header" else 0xFF
         return _parse_byte_value(
             plan.value,
@@ -293,6 +293,13 @@ def _apply_plain_field_mutation_plan(
                 f"{plan.field_name} is not present with enough bytes to patch in the {plan.selector.message_name}."
             )
         old_value = patch_byte(octets, field.start_offset, new_value)
+    elif plan.action == "replace-tail-byte":
+        new_value = _parse_plain_field_plan_value(plan)
+        if field.length is None or field.length < 1:
+            raise ProxyMutationError(
+                f"{plan.field_name} is not present with enough bytes to patch its tail in the {plan.selector.message_name}."
+            )
+        old_value = patch_byte(octets, field.start_offset + field.length - 1, new_value)
     elif plan.action == "truncate-payload":
         if field.length is None or field.length < 1:
             raise ProxyMutationError(
@@ -503,32 +510,24 @@ def _apply_optional_ie_mutation_plan(
         return
 
     if action == "set-reserved-bits":
-        if field_name != "fivegmm_capability":
-            raise ProxyMutationError(
-                f"Action '{action}' is only supported for fivegmm_capability."
-            )
         if located.value_length < 1:
             raise ProxyMutationError(
-                "fivegmm_capability payload is empty and cannot have reserved bits set."
+                f"{field_name} payload is empty and cannot have reserved bits set."
             )
         old_value = patch_byte(octets, located.value_offset, 0xFF)
         result.notes.append(
-            f"patched fivegmm_capability payload byte 0x{old_value:02x} -> 0xff to set reserved bits"
+            f"patched {field_name} payload byte 0x{old_value:02x} -> 0xff to set reserved bits"
         )
         return
 
     if action == "truncate-payload":
-        if field_name != "fivegmm_capability":
-            raise ProxyMutationError(
-                f"Action '{action}' is only supported for fivegmm_capability."
-            )
         if located.length_octets != 1:
             raise ProxyMutationError(
-                "truncate-payload currently requires a 1-octet IE length field."
+                f"truncate-payload currently requires a 1-octet IE length field for {field_name}."
             )
         if located.value_length < 1:
             raise ProxyMutationError(
-                "fivegmm_capability payload is already empty and cannot be truncated."
+                f"{field_name} payload is already empty and cannot be truncated."
             )
         removed = remove_span(
             octets,
@@ -538,8 +537,20 @@ def _apply_optional_ie_mutation_plan(
         new_length = located.value_length - len(removed)
         old_length = patch_byte(octets, located.start_offset + 1, new_length)
         result.notes.append(
-            "truncated fivegmm_capability payload by removing "
+            f"truncated {field_name} payload by removing "
             f"{format_octets(removed)} and length 0x{old_length:02x} -> 0x{new_length:02x}"
+        )
+        return
+
+    if action == "replace-first-payload-byte":
+        if located.value_length < 1:
+            raise ProxyMutationError(
+                f"{field_name} payload is empty and cannot have its first byte replaced."
+            )
+        new_value = _parse_byte_value(value, f"{field_name} replace-first-payload-byte")
+        old_value = patch_byte(octets, located.value_offset, new_value)
+        result.notes.append(
+            f"patched {field_name} payload first byte 0x{old_value:02x} -> 0x{new_value:02x}"
         )
         return
 
@@ -568,7 +579,11 @@ def apply_nas_mutation_plan(
                 plan=plan,
                 result=result,
             )
-        elif plan.selector.container_type in {"nested-registration-request", "nested-nas-message"}:
+        elif plan.selector.container_type in {
+            "nested-registration-request",
+            "nested-nas-message",
+            "nested-5gsm-message",
+        }:
             _field_schema_for_plan(plan)
 
             try:

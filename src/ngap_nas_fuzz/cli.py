@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import shlex
+import signal
+import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,14 +25,23 @@ from .nas_nested_inspector import (
 from .logs import summarize_amf_log, summarize_ueransim_log
 from .models import ProcedureTrace
 from .nas_catalog import get_nas_message_profiles
+from .nas_domain_explorer import (
+    explore_nas_mutation_domains,
+    recommend_nas_domain_frontiers,
+)
 from .nas_campaign import (
     ProxyCampaignPlan,
     SimulationCampaignPlan,
+    _amf_log_command,
+    _gnb_command,
+    _proxy_command,
+    _ue_command,
     append_observation_from_run,
     append_observation_from_simulation_run,
     build_observation,
     build_proxy_campaign_plan,
     build_simulation_campaign_plan,
+    find_run_spec,
     load_campaign_plan,
     load_simulation_campaign_plan,
     render_filled_record_command,
@@ -106,6 +120,50 @@ def build_parser() -> argparse.ArgumentParser:
         "--executable-only",
         action="store_true",
         help="Show only candidates that are executable in the current implementation",
+    )
+
+    show_nas_domains = subparsers.add_parser(
+        "show-nas-domains",
+        help="Explore modeled NAS mutation domains, including field-backed, state, and family-only domains",
+    )
+    show_nas_domains.add_argument(
+        "--message",
+        help="Optional message name, for example 'Security Mode Complete'",
+    )
+    show_nas_domains.add_argument(
+        "--reachable-only",
+        action="store_true",
+        help="Show only domains with at least one currently reachable operator",
+    )
+    show_nas_domains.add_argument(
+        "--include-operators",
+        action="store_true",
+        help="Print per-operator execution details inside each domain",
+    )
+
+    show_nas_frontiers = subparsers.add_parser(
+        "show-nas-frontiers",
+        help="Show the highest-value reachable NAS campaign frontiers across one message or the whole modeled space",
+    )
+    show_nas_frontiers.add_argument(
+        "--history",
+        type=Path,
+        help="Optional JSON history file containing prior campaign observations",
+    )
+    show_nas_frontiers.add_argument(
+        "--message",
+        help="Optional message name, for example 'Security Mode Complete'",
+    )
+    show_nas_frontiers.add_argument("--limit", type=int, default=10)
+    show_nas_frontiers.add_argument(
+        "--all-modes",
+        action="store_true",
+        help="Include non-live candidates as well as currently executable live frontiers",
+    )
+    show_nas_frontiers.add_argument(
+        "--fresh-only",
+        action="store_true",
+        help="Restrict output to fresh untried frontiers",
     )
 
     summarize_nas_campaign = subparsers.add_parser(
@@ -496,6 +554,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional tmux session name override",
     )
 
+    run_proxy_case = subparsers.add_parser(
+        "run-proxy-nas-case",
+        help="Execute one planned proxy NAS run end-to-end, collect logs, classify the result, and print the record command",
+    )
+    run_proxy_case.add_argument("--plan", required=True, type=Path)
+    run_proxy_case.add_argument("--run-id", required=True)
+    run_proxy_case.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=70.0,
+        help="Maximum wall-clock time to allow the run before stopping all processes",
+    )
+    run_proxy_case.add_argument(
+        "--startup-delay-seconds",
+        type=float,
+        default=1.0,
+        help="Delay between starting background components",
+    )
+    run_proxy_case.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=2.0,
+        help="Extra delay after a success pattern is observed before stopping processes",
+    )
+    run_proxy_case.add_argument(
+        "--poll-interval-seconds",
+        type=float,
+        default=1.0,
+        help="How often to poll the UE log for success patterns",
+    )
+    run_proxy_case.add_argument(
+        "--history-path",
+        type=Path,
+        help="Optional campaign history file path used when rendering the final record command",
+    )
+    run_proxy_case.add_argument(
+        "--success-pattern",
+        action="append",
+        default=[],
+        help="Optional substring that marks the run complete when it appears in ue.log; may be repeated",
+    )
+
     render_record = subparsers.add_parser(
         "render-proxy-nas-record-command",
         help="Render the exact history-record command for one planned proxy NAS run",
@@ -523,6 +623,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Directory containing proxy.log, amf.log, gnb.log, and ue.log",
     )
+    classify_proxy_result.add_argument("--message-name")
 
     classify_and_render_record = subparsers.add_parser(
         "classify-and-render-proxy-nas-record",
@@ -897,6 +998,11 @@ def _render_campaign_report_markdown(
         and summary.saturation == "simulation coverage complete (no live outcome yet)"
     ]
     mixed_live = [summary for summary in summaries if len(summary.live_result_counts) >= 2]
+    planned_only = [
+        summary
+        for summary in summaries
+        if summary.executable_known_operators == 0
+    ]
 
     lines: list[str] = [
         f"# NAS Campaign Report: {message_name}",
@@ -906,6 +1012,7 @@ def _render_campaign_report_markdown(
         f"- Mutation families summarized: {len(summaries)}",
         f"- Live families exhausted for current implementation: {len(live_exhausted)}",
         f"- Simulation-only families with complete supported coverage: {len(simulation_complete)}",
+        f"- Planned-only families with no live execution path yet: {len(planned_only)}",
         "",
         "## Headline Findings",
     ]
@@ -916,12 +1023,17 @@ def _render_campaign_report_markdown(
         )
     if simulation_complete:
         lines.append(
-            f"- Nested optional-IE families for `{message_name}` are fully covered in simulation, but still lack live execution outcomes."
+            f"- Some supported `{message_name}` families are fully characterized in simulation, but still lack corresponding live execution outcomes."
         )
     if mixed_live:
         families = ", ".join(f"`{summary.family_name}`" for summary in mixed_live)
         lines.append(
             f"- Mixed live outcomes were observed in {families}, showing that malformed inputs do not collapse into a single failure mode."
+        )
+    if planned_only:
+        families = ", ".join(f"`{summary.family_name}`" for summary in planned_only)
+        lines.append(
+            f"- {families} remain modeled future-work families for `{message_name}` because the current proxy/bridge implementation has no live execution path for them yet."
         )
 
     for summary in summaries:
@@ -938,8 +1050,12 @@ def _render_campaign_report_markdown(
                 f"- `registration-type-and-ngksi mutation` was dominated by `{dominant}`, indicating permissive handling for the current tested values."
             )
         elif summary.family_name == "message-type substitution" and summary.live_result_counts:
+            dominant = sorted(
+                summary.live_result_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[0][0]
             lines.append(
-                "- `message-type substitution` consistently triggered early semantic rejection, providing a stable negative-control family."
+                f"- `message-type substitution` was dominated by `{dominant}` for `{message_name}`, making it a useful control family for message-type handling."
             )
 
     lines.extend(["", "## Family Breakdown", ""])
@@ -970,9 +1086,9 @@ def _render_campaign_report_markdown(
     lines.extend(
         [
             "## Boundary Of Current Implementation",
-            "- Plain live `Registration Request` mutations are strongly covered for the currently supported operator set.",
-            "- Nested optional-IE mutations are supported through trace simulation and campaign bookkeeping.",
-            "- Live execution for nested/protected NAS mutations remains the main open engineering gap.",
+            "- Schema-driven planning, classification, recording, summary, and reporting are available across the modeled NAS catalog.",
+            "- Live proxy execution currently covers the supported plain-message families and selected later-packet nested/protected families exercised in this milestone.",
+            "- Modeled families with zero executable operators remain planned-only future work for the current proxy/bridge implementation.",
             "",
         ]
     )
@@ -1396,6 +1512,99 @@ def cmd_recommend_nas_next(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_show_nas_domains(args: argparse.Namespace) -> int:
+    domains = explore_nas_mutation_domains(
+        message_name=args.message,
+        reachable_only=args.reachable_only,
+    )
+
+    scope = args.message or "all modeled NAS messages"
+    print(f"NAS mutation domains for {scope}: {len(domains)}")
+    for domain in domains:
+        print()
+        print(f"{domain.message_name} :: {domain.family_name}")
+        print(f"  domain_kind: {domain.domain_kind}")
+        print(f"  target: {domain.target}")
+        print(f"  priority: {domain.priority}")
+        if domain.field_names:
+            print(f"  fields: {', '.join(domain.field_names)}")
+        if domain.field_kinds:
+            print(f"  field_kinds: {', '.join(domain.field_kinds)}")
+        if domain.mandatory_fields:
+            print(f"  mandatory_fields: {', '.join(domain.mandatory_fields)}")
+        if domain.location_hints:
+            print(f"  location: {domain.location_hints[0]}")
+        if domain.locator_strategies:
+            print(f"  locator_strategies: {', '.join(domain.locator_strategies)}")
+        if domain.generation_strategies:
+            print(f"  strategies: {', '.join(domain.generation_strategies)}")
+        if domain.action_kinds:
+            print(f"  actions: {', '.join(domain.action_kinds)}")
+        print(f"  operators: {domain.operator_count}")
+        print(f"  reachable_operators: {domain.reachable_operator_count}")
+        print(f"  live_proxy_operators: {domain.live_proxy_operator_count}")
+        if domain.execution_modes:
+            print(f"  execution_modes: {', '.join(domain.execution_modes)}")
+        print(f"  rationale: {domain.rationale}")
+        if args.include_operators:
+            for operator in domain.operators:
+                status = "reachable" if operator.executable_now else "planned-only"
+                live = " live-proxy" if operator.live_proxy_capable else ""
+                print(
+                    f"  operator: {operator.operator} [{operator.execution_mode}; {status}{live}]"
+                )
+                if operator.proxy_mutation is not None:
+                    value_part = (
+                        f" value={operator.proxy_value}"
+                        if operator.proxy_value is not None
+                        else ""
+                    )
+                    print(f"    proxy: {operator.proxy_mutation}{value_part}")
+    return 0
+
+
+def cmd_show_nas_frontiers(args: argparse.Namespace) -> int:
+    history = _load_history(args.history)
+    frontiers = recommend_nas_domain_frontiers(
+        history,
+        message_name=args.message,
+        limit=args.limit,
+        executable_only=not args.all_modes,
+        fresh_only=args.fresh_only,
+    )
+
+    scope = args.message or "all modeled NAS messages"
+    print(f"NAS campaign frontiers for {scope}: {len(frontiers)}")
+    for index, frontier in enumerate(frontiers, start=1):
+        print()
+        print(f"{index}. {frontier.message_name} :: {frontier.family_name}")
+        print(f"   operator: {frontier.operator}")
+        print(f"   score: {frontier.score}")
+        print(f"   domain_kind: {frontier.domain_kind}")
+        if frontier.field_names:
+            print(f"   fields: {', '.join(frontier.field_names)}")
+        print(f"   mode: {frontier.execution_mode}")
+        print(f"   supported_by_current_impl: {frontier.executable_now}")
+        print(f"   live_proxy_capable: {frontier.live_proxy_capable}")
+        print(f"   saturation: {frontier.saturation}")
+        print(
+            "   coverage: "
+            f"tried={frontier.tried_operators}/{frontier.total_known_operators}, "
+            f"live={frontier.live_tried_operators}/{frontier.total_known_operators}"
+        )
+        if frontier.proxy_mutation:
+            value_part = (
+                f" value={frontier.proxy_value}"
+                if frontier.proxy_value is not None
+                else ""
+            )
+            print(f"   proxy: {frontier.proxy_mutation}{value_part}")
+        print(f"   rationale: {frontier.rationale}")
+        for reason in frontier.recommendation_reasons:
+            print(f"   reason: {reason}")
+    return 0
+
+
 def cmd_plan_proxy_nas_campaign(args: argparse.Namespace) -> int:
     history = _load_history(args.history)
     try:
@@ -1808,6 +2017,172 @@ def cmd_render_proxy_nas_runner(args: argparse.Namespace) -> int:
     return 0
 
 
+def _runner_success_patterns(
+    overrides: list[str],
+    *,
+    message_name: str | None = None,
+) -> tuple[str, ...]:
+    if overrides:
+        return tuple(pattern for pattern in overrides if pattern)
+    if message_name == "PDU Session Establishment Request":
+        return (
+            "PDU Session establishment is successful",
+            "PDU Session Establishment Accept received",
+            "PDU Session Establishment Reject received",
+            "PDU Session Establishment Reject",
+        )
+    return (
+        "PDU Session establishment is successful",
+        "Initial Registration is successful",
+    )
+
+
+def _prepare_runner_sudo_command(command: str) -> str:
+    return re.sub(
+        r"(^|\n)(\s*)sudo\s+-n\s+",
+        lambda match: f"{match.group(1)}{match.group(2)}sudo ",
+        command,
+    )
+
+
+def _spawn_shell_command(command: str) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        ["bash", "-lc", command],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        preexec_fn=os.setpgrp,
+    )
+
+
+def _stop_process_group(proc: subprocess.Popen[bytes]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    proc.wait(timeout=5)
+
+
+def _log_contains_any_pattern(path: Path, patterns: tuple[str, ...]) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(errors="ignore")
+    return any(pattern in text for pattern in patterns)
+
+
+def _reset_runner_logs(logs_dir: Path) -> None:
+    for name in ("amf.log", "proxy.log", "gnb.log", "ue.log"):
+        path = logs_dir / name
+        if path.exists():
+            path.unlink()
+
+
+def cmd_run_proxy_nas_case(args: argparse.Namespace) -> int:
+    try:
+        plan = load_campaign_plan(args.plan)
+        run = find_run_spec(plan, args.run_id)
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+    logs_dir = Path(run.logs_dir).expanduser()
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    _reset_runner_logs(logs_dir)
+
+    success_patterns = _runner_success_patterns(
+        args.success_pattern,
+        message_name=run.message_name,
+    )
+    amf_command = _prepare_runner_sudo_command(_amf_log_command(str(logs_dir)))
+    proxy_command = _proxy_command(str(logs_dir), run.proxy_mutation, run.proxy_value)
+    gnb_command = _prepare_runner_sudo_command(_gnb_command(str(logs_dir)))
+    ue_command = _prepare_runner_sudo_command(_ue_command(str(logs_dir)))
+
+    print(f"Run id: {run.run_id}")
+    print(f"Logs dir: {logs_dir}")
+    print("Refreshing sudo credentials...")
+    try:
+        subprocess.run(["sudo", "-v"], check=True)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"Unable to refresh sudo credentials: {exc}") from exc
+
+    processes: list[tuple[str, subprocess.Popen[bytes]]] = []
+    start_order = [
+        ("amf", amf_command),
+        ("proxy", proxy_command),
+        ("gnb", gnb_command),
+    ]
+
+    try:
+        for label, command in start_order:
+            print(f"Starting {label}...")
+            proc = _spawn_shell_command(command)
+            processes.append((label, proc))
+            time.sleep(max(args.startup_delay_seconds, 0.0))
+
+        print("Starting ue...")
+        ue_proc = _spawn_shell_command(ue_command)
+        processes.append(("ue", ue_proc))
+
+        ue_log = logs_dir / "ue.log"
+        deadline = time.monotonic() + max(args.timeout_seconds, 1.0)
+        stop_reason = f"timeout after {args.timeout_seconds:.1f}s"
+
+        while time.monotonic() < deadline:
+            if _log_contains_any_pattern(ue_log, success_patterns):
+                stop_reason = "success pattern observed in ue.log"
+                if args.settle_seconds > 0:
+                    time.sleep(args.settle_seconds)
+                break
+            if ue_proc.poll() is not None and ue_proc.returncode not in (None, 0):
+                stop_reason = f"UE process exited with code {ue_proc.returncode}"
+                break
+            time.sleep(max(args.poll_interval_seconds, 0.1))
+    finally:
+        print("Stopping background processes...")
+        for _, proc in reversed(processes):
+            _stop_process_group(proc)
+
+    print(f"Stop reason: {stop_reason}")
+
+    suggestion = classify_proxy_nas_result_logs(
+        logs_dir,
+        message_name=run.message_name,
+    )
+    print(f"Suggested result class: {suggestion.result_class}")
+    print(f"Suggested note: {suggestion.note}")
+    print(f"Confidence: {suggestion.confidence}")
+    if suggestion.evidence:
+        print("Evidence:")
+        for item in suggestion.evidence:
+            print(f"  - {item}")
+
+    if args.history_path is not None:
+        print()
+        print("Record command:")
+        print(
+            render_filled_record_command(
+                plan,
+                run.run_id,
+                result_class=suggestion.result_class,
+                notes=suggestion.note,
+                plan_path=str(args.plan),
+                history_path=str(args.history_path),
+            )
+        )
+    return 0
+
+
 def cmd_render_proxy_nas_record_command(args: argparse.Namespace) -> int:
     try:
         plan = load_campaign_plan(args.plan)
@@ -1825,7 +2200,10 @@ def cmd_render_proxy_nas_record_command(args: argparse.Namespace) -> int:
 
 
 def cmd_classify_proxy_nas_result(args: argparse.Namespace) -> int:
-    suggestion = classify_proxy_nas_result_logs(args.logs_dir)
+    suggestion = classify_proxy_nas_result_logs(
+        args.logs_dir,
+        message_name=args.message_name,
+    )
     print(f"Logs dir: {args.logs_dir}")
     print(f"Suggested result class: {suggestion.result_class}")
     print(f"Suggested note: {suggestion.note}")
@@ -1838,7 +2216,10 @@ def cmd_classify_proxy_nas_result(args: argparse.Namespace) -> int:
 
 
 def cmd_classify_and_render_proxy_nas_record(args: argparse.Namespace) -> int:
-    suggestion = classify_proxy_nas_result_logs(args.logs_dir)
+    suggestion = classify_proxy_nas_result_logs(
+        args.logs_dir,
+        message_name=args.message_name,
+    )
     try:
         plan = load_campaign_plan(args.plan)
         command = render_filled_record_command(
@@ -2175,6 +2556,10 @@ def main() -> int:
         return cmd_show_nas_catalog()
     if args.command == "show-nas-candidates":
         return cmd_show_nas_candidates(args)
+    if args.command == "show-nas-domains":
+        return cmd_show_nas_domains(args)
+    if args.command == "show-nas-frontiers":
+        return cmd_show_nas_frontiers(args)
     if args.command == "summarize-nas-campaign":
         return cmd_summarize_nas_campaign(args)
     if args.command == "export-nas-campaign-report":
@@ -2209,6 +2594,8 @@ def main() -> int:
         return cmd_record_simulated_nas_observation(args)
     if args.command == "render-proxy-nas-runner":
         return cmd_render_proxy_nas_runner(args)
+    if args.command == "run-proxy-nas-case":
+        return cmd_run_proxy_nas_case(args)
     if args.command == "render-proxy-nas-record-command":
         return cmd_render_proxy_nas_record_command(args)
     if args.command == "classify-proxy-nas-result":

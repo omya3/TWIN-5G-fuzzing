@@ -254,6 +254,13 @@ def _find_plain_nas_target(trace: ProcedureTrace, message_name: str) -> int:
 
 
 def _result_hint(proxy_mutation: str) -> str:
+    if proxy_mutation in {
+        "security-mode-complete-wrong-state-initial",
+        "security-mode-complete-wrong-state-auth",
+        "pdu-session-wrong-state-initial",
+        "pdu-session-wrong-state-auth",
+    }:
+        return "expected wrong-state semantic reject"
     if proxy_mutation == "message-type":
         return "expected early semantic reject"
     if proxy_mutation == "identity-response-message-type":
@@ -274,11 +281,23 @@ def _result_hint(proxy_mutation: str) -> str:
         return "expected security-header handling result"
     if proxy_mutation == "identity-response-security-header":
         return "expected identity-response security-header handling result"
+    if proxy_mutation == "identity-response-truncate-payload":
+        return "expected identity-response payload handling result"
+    if proxy_mutation == "identity-response-invalid-bcd":
+        return "expected identity-response payload handling result"
+    if proxy_mutation == "identity-response-unsupported-identity-type":
+        return "expected identity-response payload handling result"
     if proxy_mutation == "authentication-response-security-header":
         return "expected authentication-response security-header handling result"
     if proxy_mutation == "authentication-response-zero-response-value":
         return "expected authentication-response payload handling result"
     if proxy_mutation == "authentication-response-parameter-length":
+        return "expected authentication-response payload handling result"
+    if proxy_mutation == "authentication-response-truncate-parameter":
+        return "expected authentication-response payload handling result"
+    if proxy_mutation == "authentication-response-append-bytes":
+        return "expected authentication-response payload handling result"
+    if proxy_mutation == "authentication-response-increment-parameter-length":
         return "expected authentication-response payload handling result"
     if proxy_mutation == "security-mode-complete-message-type":
         return "expected security-mode-complete semantic reject"

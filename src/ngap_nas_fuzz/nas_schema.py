@@ -42,6 +42,10 @@ def _named_operator_action_kinds(operators: tuple[str, ...]) -> tuple[str, ...]:
             action_kinds.append("duplicate-ie")
         elif normalized == "all-zero response value":
             action_kinds.append("zero-payload-value")
+        elif normalized == "truncate dnn":
+            action_kinds.append("truncate-payload")
+        elif normalized in {"invalid session type value", "bad s-nssai encoding"}:
+            action_kinds.append("replace-first-payload-byte")
         elif normalized == "append extra bytes":
             action_kinds.append("append-bytes")
         elif normalized == "leave inconsistent length metadata":
@@ -113,6 +117,8 @@ class NasFieldLocatorSpec:
     offset: int | None = None
     length: int | None = None
     length_from_field: str = ""
+    anchor_field: str = ""
+    nested_message_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -190,6 +196,35 @@ def build_nested_nas_selector(
     )
 
 
+def build_nested_5gsm_selector(
+    *,
+    message_name: str,
+    occurrence: str = "later",
+) -> PacketSelector:
+    return PacketSelector(
+        direction="uplink",
+        container_type="nested-5gsm-message",
+        message_name=message_name,
+        occurrence=occurrence,
+    )
+
+
+def build_nested_payload_selector(
+    *,
+    message_name: str,
+    occurrence: str = "later",
+) -> PacketSelector:
+    if message_name == "PDU Session Establishment Request":
+        return build_nested_5gsm_selector(
+            message_name=message_name,
+            occurrence=occurrence,
+        )
+    return build_nested_nas_selector(
+        message_name=message_name,
+        occurrence=occurrence,
+    )
+
+
 def build_plain_nas_selector(
     *,
     message_name: str,
@@ -234,7 +269,7 @@ def build_nested_optional_ie_mutation_plan(
     occurrence: str = "later",
 ) -> NasMutationPlan:
     return NasMutationPlan(
-        selector=build_nested_nas_selector(
+        selector=build_nested_payload_selector(
             message_name=message_name,
             occurrence=occurrence,
         ),
@@ -355,6 +390,11 @@ def _field_locator_spec(
                 offset=6,
                 length_from_field="mobile_identity_length",
             )
+        if field_def.name in {"requested_nssai", "fivegmm_capability"}:
+            return NasFieldLocatorSpec(
+                strategy="optional-tlv-after-field",
+                anchor_field="mobile_identity_value",
+            )
     if message_name == "Identity Response":
         if field_def.name == "security_header":
             return NasFieldLocatorSpec(strategy="fixed-offset", offset=1, length=1)
@@ -374,6 +414,16 @@ def _field_locator_spec(
             return NasFieldLocatorSpec(strategy="fixed-offset", offset=1, length=1)
         if field_def.name == "message_type":
             return NasFieldLocatorSpec(strategy="fixed-offset", offset=9, length=1)
+        if field_def.iei_tag:
+            return NasFieldLocatorSpec(
+                strategy="nested-optional-tlv",
+                nested_message_name="Registration Request",
+            )
+    if message_name == "PDU Session Establishment Request" and field_def.iei_tag:
+        return NasFieldLocatorSpec(
+            strategy="nested-5gsm-optional-tlv",
+            offset=27,
+        )
     return None
 
 
@@ -442,14 +492,20 @@ def _nested_optional_ie_action_from_rule(
     if rule.strategy == "bitfield-reserved-bits":
         return ("set-reserved-bits", None)
     if rule.strategy == "named-operators":
-        if normalized_operator == "invalid optional ie length":
+        if normalized_operator in {"invalid optional ie length", "invalid length"}:
             return ("bad-length", "0xff")
-        if normalized_operator == "duplicate optional ie":
+        if normalized_operator in {"duplicate optional ie", "duplicate ie"}:
             return ("duplicate", None)
         if normalized_operator == "unsupported sst/sd combination":
             return ("unsupported-sst-sd", None)
         if normalized_operator == "duplicate nssai entries":
             return ("duplicate-payload-entries", None)
+        if normalized_operator == "truncate dnn":
+            return ("truncate-payload", None)
+        if normalized_operator == "invalid session type value":
+            return ("replace-first-payload-byte", "0x00")
+        if normalized_operator == "bad s-nssai encoding":
+            return ("replace-first-payload-byte", "0xff")
     return None
 
 
@@ -469,14 +525,14 @@ def resolve_nested_optional_ie_plan(
         for rule in field.rules:
             if rule.family_name.lower() != normalized_family:
                 continue
-            if normalized_operator not in {label.lower() for label in rule.operator_labels}:
+            if not _operator_matches_rule(rule, operator):
                 continue
             resolved = _nested_optional_ie_action_from_rule(rule=rule, operator=operator)
             if resolved is None:
                 continue
             action, value = resolved
             return NasMutationPlan(
-                selector=build_nested_nas_selector(
+                selector=build_nested_payload_selector(
                     message_name=message_name,
                     occurrence="later",
                 ),
@@ -516,6 +572,12 @@ def _plain_field_action_from_rule(
             return ("replace-byte", resolved)
         return ("replace-word-be", resolved)
 
+    if rule.strategy == "identity-tail-bcd-substitution":
+        resolved = _last_operator_hex_value(operator)
+        if resolved is None:
+            return None
+        return ("replace-tail-byte", resolved)
+
     if rule.strategy == "payload-truncation":
         if field.kind not in {"payload", "identity"}:
             return None
@@ -525,6 +587,11 @@ def _plain_field_action_from_rule(
         normalized_operator = operator.lower()
         if normalized_operator == "toggle identity type bits inconsistently":
             return ("replace-first-byte", "0x06")
+        if field.field_name == "identity_payload":
+            if normalized_operator == "invalid bcd":
+                return ("replace-tail-byte", "0x2a")
+            if normalized_operator == "unsupported identity type":
+                return ("replace-first-byte", "0x06")
         if field.field_name == "authentication_response_parameter":
             if normalized_operator == "truncate response parameter":
                 return ("truncate-payload", None)
@@ -538,6 +605,26 @@ def _plain_field_action_from_rule(
                 return ("increment-leading-length-byte", None)
 
     return None
+
+
+def _operator_matches_rule(rule: NasRuleSchema, operator: str) -> bool:
+    normalized_operator = operator.lower()
+    if normalized_operator in {label.lower() for label in rule.operator_labels}:
+        return True
+    if normalized_operator in {label.lower() for label in rule.named_operators}:
+        return True
+
+    if rule.strategy == "payload-truncation":
+        return "truncat" in normalized_operator
+    if rule.strategy == "optional-ie-bad-length":
+        return normalized_operator in {"invalid length", "invalid optional ie length", "oversized length"}
+    if rule.strategy == "optional-ie-duplicate":
+        return normalized_operator in {"duplicate ie", "duplicate optional ie"}
+    if rule.strategy == "optional-ie-omit":
+        return normalized_operator == "omit ie entirely"
+    if rule.strategy == "bitfield-reserved-bits":
+        return "reserved bits" in normalized_operator
+    return False
 
 
 def resolve_plain_field_mutation_plan(
@@ -558,7 +645,7 @@ def resolve_plain_field_mutation_plan(
         for rule in field.rules:
             if rule.family_name.lower() != normalized_family:
                 continue
-            if normalized_operator not in {label.lower() for label in rule.operator_labels}:
+            if not _operator_matches_rule(rule, operator):
                 continue
             resolved = _plain_field_action_from_rule(
                 field=field,
