@@ -198,7 +198,7 @@ Example 3:
 resolve_operator_execution(
     message_name="Identity Response",
     family_name="identity payload corruption",
-    operator="truncation",
+    operator="invalid BCD",
 )
 ```
 
@@ -207,17 +207,16 @@ resolve_operator_execution(
 Example 3:
 
 ```python
-(True, "plain-simulation", "plain-nas-field-simulation", "...")
+(True, "proxy", "identity-response-invalid-bcd", None)
 ```
-
-The last `"..."` is a serialized mutation-plan string.
 
 Meaning:
 
 ```text
 This operator is supported
-But not as a live proxy mutation yet
-It should run in plain-simulation mode
+It now runs directly in live proxy mode
+The runtime mutation id is identity-response-invalid-bcd
+No extra numeric value is needed because the proxy applies the fixed 0x2a tail patch itself
 ```
 
 ---
@@ -262,6 +261,29 @@ For this mutation operator:
 **Why it matters**
 
 This is the core decision point that turns a mutation idea into an execution plan.
+
+**Important update about the current repo**
+
+Earlier versions of the project used plain-simulation for more of the later-message field corruptions.
+
+The current codebase now resolves several of them directly to live proxy execution, including:
+
+- `Identity Response :: identity payload corruption`
+- `Authentication Response :: authentication parameter corruption`
+- `Security Mode Complete :: wrong-state delivery`
+- live nested optional-IE mutations in later nested `Registration Request` traffic
+
+So when you explain this file during the demo, it is better to emphasize:
+
+```text
+abstract operator
+    ->
+runtime mapping
+    ->
+actual live proxy flag when supported
+```
+
+instead of describing it mainly as a simulation fallback layer.
 
 ### 4. `_live_nested_optional_ie_value(...)`
 
@@ -386,7 +408,48 @@ so history comparison and bookkeeping stay consistent.
 
 This helps old runs and new runs be recorded under the same consistent runtime identity.
 
-### 6. `_normalize_legacy_proxy_runtime(...)`
+### 6. `render_proxy_command_flag(proxy_mutation, value)`
+
+**What it does**
+
+It converts the internal runtime mutation id into the exact flag fragment for `sctp_ngap_proxy`.
+
+**Examples**
+
+```python
+render_proxy_command_flag("identity-response-invalid-bcd", None)
+```
+
+returns something like:
+
+```text
+ --mutate-identity-response-invalid-bcd
+```
+
+and:
+
+```python
+render_proxy_command_flag("mobile-identity-toggle-type-bits", None)
+```
+
+returns:
+
+```text
+ --mutate-mobile-identity-type-bits
+```
+
+**In simple words**
+
+```text
+Take the internal runtime mutation name
+and turn it into the exact proxy CLI flag.
+```
+
+**Why it matters**
+
+This is the last step before the experiment planner can build a real runnable proxy command.
+
+### 7. `_normalize_legacy_proxy_runtime(...)`
 
 **What it does**
 
@@ -431,7 +494,7 @@ You probably only need to explain this if someone asks about:
 - bookkeeping consistency
 - why old and new runtime IDs both appear in history
 
-### 7. `render_operator_for_value(base_operator, proxy_mutation, value)`
+### 8. `render_operator_for_value(base_operator, proxy_mutation, value)`
 
 **What it does**
 
@@ -480,78 +543,6 @@ Take internal runtime info and rebuild the clean human-readable operator text.
 **Why it matters**
 
 Useful when generating reports, summaries, or showing selected runs back to the user.
-
-### 8. `render_proxy_command_flag(proxy_mutation, value)`
-
-This is another very important function.
-
-**What it does**
-
-It converts the internal runtime mutation info into the actual proxy CLI flag.
-
-**Input**
-
-Example 1:
-
-```python
-render_proxy_command_flag("message-type", "0x5c")
-```
-
-**Output**
-
-```python
-" --mutate-initial-nas-msgtype 0x5c"
-```
-
----
-
-### Input
-
-Example 2:
-
-```python
-render_proxy_command_flag(
-    "mobile-identity-toggle-type-bits",
-    None,
-)
-```
-
-**Output**
-
-```python
-" --mutate-mobile-identity-type-bits"
-```
-
----
-
-### Input
-
-Example 3:
-
-```python
-render_proxy_command_flag(
-    "nested-registration-request-optional-ie-live",
-    "field:requested_nssai,action:omit",
-)
-```
-
-**Output**
-
-```python
-" --mutate-nested-optional-ie field:requested_nssai,action:omit"
-```
-
-**In simple words**
-
-```text
-Convert the framework’s internal mutation id into the exact command-line flag for the proxy.
-```
-
-**Why it matters**
-
-This is what makes the campaign planner able to generate runnable shell commands.
-
-
 
 Imp functions:
 

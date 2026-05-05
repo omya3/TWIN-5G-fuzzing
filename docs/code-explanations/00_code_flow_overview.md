@@ -8,23 +8,57 @@ nas_catalog.py
     ->
 nas_scheduler.py
     ->
+nas_domain_explorer.py
+    ->
 nas_execution_bridge.py
     ->
 nas_campaign.py
     ->
+cli.py
+    ->
 sctp_ngap_proxy.c
     ->
 result_classifier.py
+    ->
+history.json / campaign summaries / reports
 ```
 
 In words:
 
 - `nas_catalog.py` defines what exists
 - `nas_scheduler.py` decides what to try next
+- `nas_domain_explorer.py` summarizes reachable coverage and frontiers
 - `nas_execution_bridge.py` decides how it can run
 - `nas_campaign.py` builds real commands and plan files
+- `cli.py` orchestrates the end-to-end workflow
 - `sctp_ngap_proxy.c` performs the live packet mutation
 - `result_classifier.py` reads logs and labels the result
+- history and reporting commands persist the observation and refresh summaries
+
+## Current End-to-End CLI Flow
+
+Today the normal demo path is not just "print commands and run them manually."
+
+The most important current CLI flow is:
+
+```text
+next-proxy-nas-case
+    ->
+run-proxy-nas-case
+    ->
+classify-and-render-proxy-nas-record
+or record-proxy-nas-observation
+    ->
+summarize-nas-campaign
+```
+
+In simple words:
+
+- `next-proxy-nas-case` or `plan-proxy-nas-campaign` picks the next runnable experiment
+- `run-proxy-nas-case` consumes the saved plan and launches AMF log capture, proxy, gNB, and UE
+- the classifier suggests the result class from the collected logs
+- the observation is written into `history.json`
+- campaign summaries and exported reports reflect the new run
 
 ## 1. Catalog Layer
 
@@ -138,6 +172,7 @@ What this means:
 
 - this layer decides whether an operator is:
   - `proxy`
+  - `nested-simulation`
   - `plain-simulation`
   - `planned`
 - it also decides:
@@ -231,8 +266,9 @@ Main outward use:
 
 ```text
 CLI command next-proxy-nas-case calls build_proxy_campaign_plan()
-User runs generated commands
-History recording uses render_record_command() or append_observation_from_run()
+CLI command plan-proxy-nas-campaign writes reusable multi-run plans
+CLI command run-proxy-nas-case consumes ProxyCampaignPlan entries and executes them
+History recording uses render_record_command(), render_filled_record_command(), or append_observation_from_run()
 ```
 
 ## 5. Live Proxy Runtime Layer

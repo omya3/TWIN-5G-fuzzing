@@ -4,7 +4,7 @@
 
 What this file does:
 
-> It converts a recommended mutation into a runnable experiment plan.
+> It converts a recommended mutation into a runnable experiment plan and helps turn finished runs back into history entries.
 
 In simple words:
 
@@ -19,8 +19,9 @@ So this file answers questions like:
 - What proxy / AMF / gNB / UE commands should be run?
 - How do we save/load a campaign plan?
 - How do we record the result back into history?
+- How does the automated runner consume a saved plan?
 
-This file is basically the **experiment planner and recorder**.
+This file is basically the **experiment planner, plan serializer, and recorder helper**.
 
 ## Most Important Data Structures
 
@@ -168,6 +169,25 @@ and convert them into a real run plan with actual commands.
 **Why it matters**
 
 This is the main experiment-planning function.
+
+**Important update about the current workflow**
+
+The output of `build_proxy_campaign_plan(...)` is no longer used only for manual terminal-by-terminal execution.
+
+Today the generated `ProxyCampaignPlan` is consumed in two common ways:
+
+1. manual execution using the printed proxy / AMF / gNB / UE commands
+2. automated execution through `cli.py` via `run-proxy-nas-case`
+
+So the plan file is now the shared handoff point between:
+
+```text
+recommendation
+    ->
+saved run spec
+    ->
+manual or automated execution
+```
 
 **Very important internal flow**
 
@@ -415,13 +435,15 @@ Inside this campaign plan, find the exact run with this ID.
 
 Other functions use this when they need one specific run.
 
+This is also the lookup step used before automated execution. The CLI runner loads the saved plan, finds the selected `run_id`, and then launches the matching experiment.
+
 ### 11. `render_record_command(...)`
 
 This is very important for bookkeeping.
 
 **What it does**
 
-It creates the command that the user should run to record the result after the experiment finishes.
+It creates the command that can be run to record the result after the experiment finishes.
 
 **Input**
 
@@ -509,6 +531,8 @@ Give me the final complete command to record this run result immediately.
 
 Very useful in automation and report generation.
 
+In the current repo, `run-proxy-nas-case` prints this kind of filled record command automatically after log classification.
+
 ### 13. `append_observation_from_run(...)`
 
 **What it does**
@@ -555,6 +579,28 @@ and turn it into one history entry.
 
 This connects the campaign plan to the scheduler history.
 
+### 14. How `nas_campaign.py` fits into the automated runner
+
+This file does not directly start processes itself. That part lives in `cli.py`.
+
+But the current automated runner depends on this file heavily:
+
+```text
+cmd_run_proxy_nas_case()   [from cli.py]
+    ->
+load_campaign_plan()       [from nas_campaign.py]
+    ->
+find_run_spec()            [from nas_campaign.py]
+    ->
+use ProxyRunSpec fields:
+    - proxy_command
+    - amf_log_command
+    - gnb_command
+    - ue_command
+```
+
+So even though `cli.py` performs the orchestration, `nas_campaign.py` is still the file that defines what one runnable experiment actually is.
+
 
 Imp functions:
 
@@ -566,13 +612,15 @@ Imp functions:
 6. `_gnb_command(...)`
 7. `_ue_command(...)`
 8. `render_record_command(...)`
+9. `render_filled_record_command(...)`
 
 Other functions:
 
-9. `_result_hint(...)`
-10. `append_observation_from_run(...)`
-11. `save_campaign_plan(...)` / `load_campaign_plan(...)`
+10. `_result_hint(...)`
+11. `append_observation_from_run(...)`
+12. `save_campaign_plan(...)` / `load_campaign_plan(...)`
+13. `find_run_spec(...)`
 
 ## Conclusion
 
-> `nas_campaign.py` is the experiment-planning layer of the framework. It takes scheduler recommendations and turns them into runnable live experiments with a run ID, log directory, proxy command, AMF log command, gNB command, and UE command. It also generates record commands so completed runs can be safely written back into history. In short, this file converts mutation recommendations into executable campaign runs and structured observations.
+> `nas_campaign.py` is the experiment-planning layer of the framework. It takes scheduler recommendations and turns them into runnable live experiments with a run ID, log directory, proxy command, AMF log command, gNB command, and UE command. It also serializes those runs into reusable JSON plans and generates the bookkeeping helpers needed to write completed runs back into history. In short, this file converts mutation recommendations into executable campaign artifacts that can be run manually or through the automated CLI workflow.
