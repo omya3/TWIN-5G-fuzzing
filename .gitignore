@@ -8,6 +8,10 @@
 !scripts/**
 !src/
 !src/**
+!docs/
+docs/*
+!docs/CS24MTECH12013_TWIN_presentation.pdf
+!docs/CS24MTECH12013_TWIN_report.pdf
 
 # Python/cache noise inside tracked folders
 **/__pycache__/
